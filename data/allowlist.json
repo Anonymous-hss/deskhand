@@ -1,0 +1,26 @@
+{
+  "allowedHosts": [
+    "localhost:4000",
+    "127.0.0.1:4000",
+    "shop.chaico.local",
+    "admin.chaico.local",
+    "issues.chaico.local"
+  ],
+  "highRiskKeywords": [
+    "submit",
+    "pay",
+    "delete",
+    "remove",
+    "send",
+    "save price update",
+    "update price",
+    "confirm payment",
+    "publish"
+  ],
+  "approverRoles": [
+    "admin",
+    "ops-lead",
+    "qa-lead"
+  ]
+}
+

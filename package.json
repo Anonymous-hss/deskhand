@@ -1,0 +1,27 @@
+{
+  "name": "deskhand-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deskhand — An AI teammate with its own sandboxed computer for Switch, Slack, Windows & iOS",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:demos": "npm --workspace @deskhand/chai-co-demos run dev",
+    "dev:host": "npm --workspace @deskhand/agent-host run dev",
+    "dev:studio": "npm --workspace @deskhand/windows-studio run dev",
+    "test": "npm run test --workspaces --if-present",
+    "budget:status": "node -e \"console.log(JSON.parse(require('fs').readFileSync('./data/call-budget.json', 'utf8')))\""
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "typescript": "^5.6.3"
+  }
+}
+

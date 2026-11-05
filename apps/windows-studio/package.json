@@ -1,0 +1,20 @@
+{
+  "name": "@deskhand/windows-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/studioServer.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/studioServer.js"
+  },
+  "dependencies": {
+    "@deskhand/shared-protocol": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}
+
