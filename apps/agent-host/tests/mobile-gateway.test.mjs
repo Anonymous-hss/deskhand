@@ -121,3 +121,17 @@ test('expired approval cannot execute a risky action', async () => {
   assert.equal(actions.length, 0);
   await host.emergencyStop();
 });
+
+test('observed bug evidence survives a later invalid model response', async () => {
+  const { host } = harness();
+  host.browser.getPageSnapshot = async () => ({ url:'http://localhost:4000/shop', title:'Shop', interactiveElements:'', textSnippet:'', observedErrors:['500 Checkout failed'] });
+  host.planner.planNextStep = async (_prompt, step) => {
+    if (step) throw new Error('Invalid model completion');
+    return {thought:'Inspect checkout', action:{type:'navigate',url:'http://localhost:4000/shop'},riskLevel:'LOW',needsHumanTakeover:false};
+  };
+  const task = await host.startTask({...params,roomId:'room',threadId:'thread'});
+  await tick(); await tick();
+  assert.equal(task.status,'FAILED');
+  assert.equal(task.bugReport.title,'500 Checkout failed');
+  assert.equal(host.repository.get(task.taskId).bugReport.title,'500 Checkout failed');
+});

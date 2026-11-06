@@ -159,6 +159,7 @@ export class DeskhandGatewayServer {
     }
     const filing = /^file(?: it| the bug| the report)?(?: in (?:the )?issue tracker)?[.!]?$/i.test(params.prompt.trim());
     const parent = params.parentTaskId ? this.repository.get(params.parentTaskId) : filing ? this.repository.resolveParent(params.roomId || 'ops', params.threadId) : undefined;
+    if (parent && !parent.bugReport) parent.bugReport = reportFromEvidence(parent);
     if (filing && (!parent?.bugReport || parent.roomId !== (params.roomId || 'ops') || parent.threadId !== params.threadId)) {
       throw new Error('No observed bug report exists in this conversation. Reproduce the issue first or supply the matching source task.');
     }
@@ -421,6 +422,7 @@ export class DeskhandGatewayServer {
             task.observedErrors!.push({ stepNumber: step.stepNumber, timestamp: step.timestamp, pageUrl: observed.url, screenshotUrl, errorText });
           }
         }
+        if (task.intent !== 'file_issue') task.bugReport = reportFromEvidence(task);
         task.updatedAt = new Date().toISOString();
 
         this.broadcast({
@@ -443,6 +445,7 @@ export class DeskhandGatewayServer {
       if (!this.isCurrentTask(task)) return;
       const msg = (err as Error).message;
       task.status = msg.includes('CallBudgetGuard') ? 'HALTED_BY_BUDGET' : 'FAILED';
+      if (task.intent !== 'file_issue') task.bugReport = reportFromEvidence(task);
       task.summary = msg;
       this.broadcast({ event: 'task:completed', data: task });
       this.broadcast({ event: 'host:status', data: this.getStatusPayload() });

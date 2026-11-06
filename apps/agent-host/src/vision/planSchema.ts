@@ -4,7 +4,7 @@ export const planSchema = {
   required: ['thought', 'result', 'action', 'riskLevel', 'riskReason', 'needsHumanTakeover', 'takeoverReason'],
   properties: {
     thought: { type: 'string', description: 'One concise progress caption.' },
-    result: { type: 'string', description: 'Required final answer and observed outcome when action.type is complete. Quote any requested page value exactly. Empty string for other actions.' },
+    result: { type: 'string', minLength: 1, description: 'Required final answer and observed outcome when action.type is complete. Quote any requested page value exactly. Use Pending for other actions.' },
     action: {
       type: 'object', additionalProperties: false,
       required: ['type', 'url', 'selectorHint', 'text', 'key', 'x', 'y'],
