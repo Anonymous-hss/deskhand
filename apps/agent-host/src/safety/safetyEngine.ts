@@ -63,7 +63,7 @@ export class SafetyEngine {
       const demo = new URL(process.env.DEMO_APPS_URL || 'http://localhost:4000');
       isDemoTracker = current.origin === demo.origin && current.pathname === '/issues';
     } catch { /* No implicit exemption for unknown pages. */ }
-    if (plan.action.type === 'complete' || (isDemoTracker && plan.riskLevel === 'LOW' && plan.action.selectorHint === '#submit-issue-btn')) {
+    if (['complete', 'wait', 'scroll'].includes(plan.action.type) || (isDemoTracker && plan.riskLevel === 'LOW' && plan.action.selectorHint === '#submit-issue-btn')) {
       return { required: false, promptQuestion: '', diffSummary: '' };
     }
 

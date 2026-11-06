@@ -75,7 +75,9 @@ export class BrowserRuntime {
       const screenshotDataUrl = process.env.VISION_MODE === 'live'
         ? 'data:image/jpeg;base64,' + (await page.screenshot({ type: 'jpeg', quality: 65 })).toString('base64') : undefined;
 
-      const snapshot = await page.evaluate(() => {
+      const demo = new URL(process.env.DEMO_APPS_URL || 'http://localhost:4000');
+      const ownedDemo = ['localhost', '127.0.0.1'].includes(demo.hostname) && new URL(url).origin === demo.origin;
+      const snapshot = await page.evaluate((ownedDemo) => {
         const elements: string[] = [];
         const interactive = document.querySelectorAll(
           'button, a, input, select, textarea, [role="button"], [role="link"], [role="tab"]'
@@ -113,8 +115,15 @@ export class BrowserRuntime {
 
           let selector =
             id || name || placeholder || (text ? `${tag}:has-text("${text.replace(/"/g, '')}")` : tag);
+          // Only these disposable, app-owned demo fields may expose their values.
+          const demoFields = ['coupon-input', 'issue-title', 'issue-steps', 'issue-severity', 'price-masala-chai'];
+          const exposeDemoField = ownedDemo && demoFields.includes(htmlEl.id);
+          const form = htmlEl as HTMLInputElement | HTMLSelectElement;
+          const value = exposeDemoField ? ` currentValue=${JSON.stringify(form.value.slice(0, 2000))}` : '';
+          const options = exposeDemoField && tag === 'select' ? ` options=${JSON.stringify(Array.from((htmlEl as HTMLSelectElement).options).map(option => ({value:option.value,label:option.text,selected:option.selected})))}` : '';
+          const required = htmlEl.hasAttribute('required') ? ' REQUIRED' : '';
           elements.push(
-            `<${tag}${id}${name}${type}${placeholder}${href ? ' ' + href : ''}> ${text ? `"${text}"` : ''} -> selectorHint: "${selector}"`
+            `<${tag}${id}${name}${type}${placeholder}${href ? ' ' + href : ''}> ${text ? `"${text}"` : ''}${value}${required}${options} -> selectorHint: "${selector}"`
           );
           count++;
         });
@@ -127,7 +136,7 @@ export class BrowserRuntime {
           .map(el => (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 1200))
           .filter(text => /error|exception|failed|failure|crash|\b5\d\d\b/i.test(text));
         return { elements: elements.join('\n'), bodyText, observedErrors };
-      });
+      }, ownedDemo);
 
       return {
         title,
@@ -236,7 +245,9 @@ export class BrowserRuntime {
         if (action.selectorHint && typeof action.text === 'string') {
           await this.highlightSelector(page, action.selectorHint);
           try {
-            await page.fill(action.selectorHint, action.text, { timeout: 3500 });
+            const target = page.locator(action.selectorHint).first();
+            if (await target.evaluate(element => element.tagName === 'SELECT')) await target.selectOption(action.text, { timeout: 3500 });
+            else await target.fill(action.text, { timeout: 3500 });
           } catch {
             try {
               const loc = page.locator(action.selectorHint).first();

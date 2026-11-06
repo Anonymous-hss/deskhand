@@ -11,7 +11,9 @@ await Promise.all(endpoints.map(async ([name, url]) => {
     record(name, response.ok, `HTTP ${response.status}`);
     if (name === 'Agent host' && response.ok) {
       const status = await response.json();
-      record('Switch connection', status.switchConnected, status.switchConnected ? 'Heartbeat connected' : 'Start Switch and check SWITCH_SERVER_URL');
+      if (status.coordination?.mode === 'console_managed') {
+        record('Coordination mode', true, 'Console-managed coordinator configured; direct host link is unused. Verify Slack delivery separately.');
+      } else record('Legacy Switch connection', status.switchConnected, status.switchConnected ? 'Heartbeat connected' : 'Check the optional legacy transport configuration');
       record('API budget', !status.budget.halted, `${status.budget.usedCalls}/${status.budget.maxCalls}`);
     }
   } catch { record(name, false, 'Run npm run dev'); }

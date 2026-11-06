@@ -209,11 +209,11 @@ export class DeskhandGatewayServer {
   }
 
   private async runTaskLoop(task: DeskhandTask): Promise<void> {
+    const callsAtStart = this.budget.getStatus().usedCalls;
     try {
       const defaultMaxSteps = process.env.GENERALIZED_AGENT === 'true' ? 30 : 10;
       const configuredSteps = Number(process.env.MAX_TASK_STEPS || defaultMaxSteps);
       const maxSteps = Number.isInteger(configuredSteps) ? Math.min(Math.max(configuredSteps, 1), 30) : defaultMaxSteps;
-      const callsAtStart = this.budget.getStatus().usedCalls;
       for (let stepIndex = 0; stepIndex < maxSteps; stepIndex++) {
         if (!this.isCurrentTask(task)) return;
 
@@ -232,6 +232,16 @@ export class DeskhandGatewayServer {
         );
 
 
+        // Preserve source report data exactly when filling the owned demo tracker.
+        if (task.intent === 'file_issue' && task.bugReport && plan.action.type === 'type') {
+          const tracker = new URL(process.env.DEMO_APPS_URL || 'http://localhost:4000');
+          const current = new URL(pageSnapshot.url);
+          if (current.origin === tracker.origin && current.pathname === '/issues') {
+            if (plan.action.selectorHint === '#issue-title') plan.action.text = task.bugReport.title;
+            if (plan.action.selectorHint === '#issue-steps') plan.action.text = task.bugReport.stepsToReproduce.join('; ');
+            if (plan.action.selectorHint === '#issue-severity') plan.action.text = task.bugReport.severity;
+          }
+        }
         if (!this.isCurrentTask(task)) return;
         task.callsUsed = this.budget.getStatus().usedCalls - callsAtStart;
         this.broadcast({ event: 'host:status', data: this.getStatusPayload() });
@@ -443,6 +453,7 @@ export class DeskhandGatewayServer {
       this.approvalResolvers.delete(task.taskId);
       this.takeoverResolvers.delete(task.taskId);
       if (!this.isCurrentTask(task)) return;
+      task.callsUsed = this.budget.getStatus().usedCalls - callsAtStart;
       const msg = (err as Error).message;
       task.status = msg.includes('CallBudgetGuard') ? 'HALTED_BY_BUDGET' : 'FAILED';
       if (task.intent !== 'file_issue') task.bugReport = reportFromEvidence(task);

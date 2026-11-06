@@ -99,3 +99,9 @@ test('completed model plans carry an explicit final result rather than a progres
   const result = parseVisionPlan(JSON.stringify({ thought: 'Reading the result', result: 'The observed value is 249', action: { type: 'complete' }, riskLevel: 'LOW' }));
   assert.equal(result.result, 'The observed value is 249');
 });
+
+test('truncated Responses output fails before any partial plan is accepted', async t => {
+  const { planner } = fixture(t, { AZURE_OPENAI_ENDPOINT:'https://test.openai.azure.com/openai/v1/responses' });
+  t.mock.method(globalThis,'fetch',async()=>Response.json({status:'incomplete',incomplete_details:{reason:'max_output_tokens'},output_text:JSON.stringify(plan)}));
+  await assert.rejects(planner.planNextStep('inspect page',0),/incomplete response.*max_output_tokens/);
+});

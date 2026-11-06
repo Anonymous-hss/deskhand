@@ -1,53 +1,31 @@
-# Live host configuration and verification
-
-The checkout is based on upstream `22cba6d`. Local iOS work was preserved while resolving the gateway conflict. The backup stash `codex-ios-before-upstream-22cba6d` remains available.
-
-## Run
+# Local setup and active architecture
 
 ```sh
 npm ci
-npm run build
 npx playwright install chromium
+npm run build
 npm run config:check
 npm run dev
 ```
 
-On this Mac, Chromium is already installed in Playwright's standard cache. The ignored `.env` contains the supplied Azure Responses endpoint, `gpt-4o` deployment and credentials, plus the requested generalized-browsing flags. `.env` has owner-only filesystem permissions; no key is in tracked source files.
+Copy `.env.example` to ignored `.env` and set the Azure endpoint/key/deployment for live mode. Resource roots, v1 bases and full Responses URLs are accepted. Mock mode is explicit and never silently replaces a failed live call. Keep credentials out of source and model instructions.
 
-The complete configured Azure endpoint is used directly. Resource-root and `/openai/v1` base endpoints are also supported. The legacy `AI_API_KEY` alias is accepted, but `AZURE_OPENAI_API_KEY` takes priority. Invalid configuration fails before reserving a model call. Live mode never silently falls back to deterministic actions.
+The active architecture is Slack → Switch Console-managed Claude agent → restricted `scripts/deskhand-room.js` CLI → browser host. Configure the existing agent with [these instructions](SWITCH_AGENT_INSTRUCTIONS.md). The host reports `coordination.mode: console_managed`; its `switchConnected: false` describes the unused direct legacy client. This does not prove or disprove Slack delivery. `lastAgentContactAt` is the last authenticated bridge request, not an independent Switch connection heartbeat. Claude coordinator usage is separate from the host Azure budget.
 
-Browser screenshots and DOM snapshots are sent to the configured Azure deployment. Strict Structured Outputs constrain browser plans; runtime validation checks actions, targets, risk labels, and the explicit final result. Failed navigation/click/type actions fail visibly rather than reporting successful work. STOP cancels the in-flight provider request and pending approval/takeover gates.
+Studio is loopback-only at `http://localhost:4200` and injects its operator credential on its server-side host proxy. The CLI uses a restricted coordinator credential. Both are generated in ignored `.deskhand/client-credentials.json`, never embedded in HTML. The coordinator cannot approve or control takeover. The WebSocket is a read-only feed; authenticated REST carries operator mutations. The legacy stream/webhook implementation is opt-in with `SWITCH_TRANSPORT=direct_legacy`; it is not the active installed Console protocol and is not a verified production integration.
 
-The persisted budget remains in `data/call-budget.json`. Calls are reserved before provider requests; failures still count. HTTP 401/403/429 halt further calls. Existing unreadable or corrupt budget files fail closed. Do not reset the counter to bypass the cap.
+On a physical iPhone, use the host's LAN address on port 4100. In Studio choose **Pair iPhone operator**. Turn Offline demo off in phone settings, enter the address and single-use five-minute code, then Save. The token is scoped to this host in Keychain. Leave the code blank on later saves. Live roles come from the host, not persona claims. Approvals require a matching unexpired approval ID and unchanged page preview; Face ID/passcode is enforced by the app. Local HTTP and public read-only task/capture feeds are for a trusted-LAN demo; remote deployment requires TLS and stronger access controls.
 
-## Switch
+Screenshots and page context go to the configured Azure deployment. Only the known disposable loopback demo form fields expose their current values/options in DOM context; this is not enabled for arbitrary sites. Provider output is schema-constrained and runtime-validated. Incomplete/invalid results fail visibly. STOP cancels pending provider and human gates. Observed errors survive planner failures. Final saved prices and issue links are verified from the actual page.
 
-The host accepts Switch webhooks at `http://<host>:4100/webhook/switch` or `/api/switch/events`. In stream mode it also reads SSE from `/agents/<agent-id>/events`; set `SWITCH_EVENTS_PATH` if the installed Switch service uses a different relative route. Heartbeats run every two seconds and re-register after disconnection. Message posting falls back to `/agents/<agent-id>/message` when the room endpoint fails.
-
-Incoming events must have `addressed:true`, text, sender name, and room ID. Event IDs are deduplicated across stream/webhook delivery. Approval commands accept `approve`, `@deskhand approve`, `not now`, or a matching `approve:<task-id>` / `reject:<task-id>`. Missing roles are viewers; stale task IDs and other-room approval messages cannot approve the current task. Persona roles remain a trusted-LAN hackathon convention, not authenticated identities.
-
-## Tests
+The 150-call cap persists in `data/call-budget.json`. Failed provider attempts count; 401/403/429 halt further requests. Corrupt budget state fails closed. Never reset this file to bypass the cap. Tests use isolated temporary budget/state files.
 
 ```sh
-npm test                    # budget guard + isolated host/provider/Switch regressions
-npm run test:integration    # real Chromium, mock-planner Chai Co. and Switch webhook flows
-npm run test:generalized    # real Chromium with a local Azure-compatible fixture (no external calls)
-npm run test:azure          # one real Azure connectivity request, charged to the persisted cap
+npm test                   # unit/provider/security regressions
+npm run test:integration   # isolated Chromium workflows and local model fixture; no paid calls
+swift test --package-path ios/DeskhandMobile
+npm run readiness          # local configuration/service checks; no model requests
+RECORD_DEMO=true npm run dev # browser videos in ignored captures/videos; close host to finalize
 ```
 
-Optional full live browser check (up to six real provider requests):
-
-```sh
-node --env-file=.env test-generalized-agent.js --azure-live
-```
-
-The fixture modes use disposable local pages and test credentials. They never test by posting to a real Switch room. Real Switch deployment/LAN configuration and physical iPhone permissions/Face ID/voice/Live Activities still need operator rehearsal.
-
-## Verified in this checkout
-
-- Upstream pulled through `22cba6d`; no unresolved merge conflicts.
-- Full TypeScript build, 22 host regressions, six Swift cases, and iOS/widget simulator build passed.
-- Real Chromium Chai Co. flows and Switch webhook/chat approval passed in mock-planner mode.
-- Local SSE registration/event delivery and REST fallback passed against a local Switch fixture.
-- Real Azure Responses/GPT-4o browser task passed in three model requests. Current persisted usage is **10/150**, including earlier diagnostic calls. No counter was reset.
-- Credential scan found no Azure key in tracked diffs or untracked source files.
+`npm run test:switch` exercises only the legacy connector fixture. `npm run test:azure` makes a charged provider request; it is not required for the offline checks. For real Slack evidence and remaining device/Windows limits, see [verification status](IOS_IMPLEMENTATION_STATUS.md).

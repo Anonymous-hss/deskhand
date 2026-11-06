@@ -4,7 +4,7 @@
 
 Every team has chores stuck in web apps with no API: vendor portals, old admin panels, government and bank sites, or a staging app with a bug nobody can reproduce. Today one person does them by hand.
 
-**Deskhand** is an AI teammate in Switch / Slack with **its own sandboxed computer** on Windows and a **native iOS Companion App** for voice tasks, 1-tap safety approvals, and live touch screen takeover.
+**Deskhand** is an AI teammate in Switch / Slack with **its own sandboxed browser**, a cross-platform web Studio, and a **native iOS Companion App** for voice tasks, 1-tap safety approvals, and live touch screen takeover.
 
 ---
 

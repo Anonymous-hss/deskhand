@@ -86,3 +86,10 @@ test('Switch connects to a local SSE server and falls back when post_message is 
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+test('a model waiting for approval cannot create an approval for a wait action', () => {
+  const safety = new SafetyEngine();
+  const plan = {thought:'Waiting for human approval to save price update',action:{type:'wait'},riskLevel:'HIGH',needsHumanTakeover:false};
+  assert.equal(safety.requiresTeamApproval(plan,'http://localhost:4000/admin').required,false);
+  assert.equal(safety.requiresTeamApproval({...plan,action:{type:'click',selectorHint:'#save-price-btn'}},'http://localhost:4000/admin').required,true);
+});
