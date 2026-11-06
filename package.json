@@ -11,11 +11,12 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "dev": "node scripts/start-all.js",
+    "dev": "node --env-file=.env scripts/start-all.js",
     "dev:demos": "npm --workspace @deskhand/chai-co-demos run dev",
     "dev:host": "npm --workspace @deskhand/agent-host run dev",
     "dev:studio": "npm --workspace @deskhand/windows-studio run dev",
-    "test": "npm run test:flows && npm run test:switch",
+    "test": "npm run test:budget && npm run test:flows && npm run test:switch",
+    "test:budget": "node test-budget-guard.js",
     "test:flows": "node test-all-flows.js",
     "test:switch": "node test-switch-protocol.js",
     "budget:status": "node -e \"console.log(JSON.parse(require('fs').readFileSync('./data/call-budget.json', 'utf8')))\""

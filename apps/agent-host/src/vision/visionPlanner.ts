@@ -195,31 +195,111 @@ export class VisionPlanner {
     stepIndex: number,
     _screenshotUrl?: string
   ): Promise<VisionPlanOutput> {
-    const apiKey = process.env.AI_API_KEY;
-    if (!apiKey || apiKey === 'replace-with-your-vision-api-key') {
-      return this.getDeterministicDemoPlan(prompt, stepIndex);
+    const basePlan = this.getDeterministicDemoPlan(prompt, stepIndex);
+
+    // 1. Live Azure OpenAI (gpt-4o)
+    const azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+    const azureKey = process.env.AZURE_OPENAI_API_KEY || process.env.AI_API_KEY;
+
+    if (azureEndpoint && azureKey && azureKey !== 'replace-with-your-vision-api-key') {
+      try {
+        const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4o';
+        const isResponsesApi = azureEndpoint.includes('/responses');
+
+        const requestBody = isResponsesApi
+          ? {
+              model: deployment,
+              input: `You are Deskhand, an AI teammate controlling a sandboxed computer browser for web chores.
+Task: "${prompt}"
+Step ${stepIndex + 1}: Current plan: "${basePlan.thought}".
+Respond in JSON format: { "thought": string }`
+            }
+          : {
+              model: deployment,
+              messages: [
+                {
+                  role: 'system',
+                  content: 'You are Deskhand, an AI teammate controlling a sandboxed computer browser for web chores.'
+                },
+                {
+                  role: 'user',
+                  content: `Task: "${prompt}". Step ${stepIndex + 1}: Planned step "${basePlan.thought}". Respond in JSON: { "thought": string }`
+                }
+              ]
+            };
+
+        const response = await fetch(azureEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'api-key': azureKey
+          },
+          body: JSON.stringify(requestBody)
+        });
+
+        this.budget.inspectHttpStatus(response.status);
+
+        if (response.ok) {
+          const data = (await response.json()) as any;
+          let generatedText = '';
+          if (data?.output?.[0]?.content?.[0]?.text) {
+            generatedText = data.output[0].content[0].text;
+          } else if (data?.choices?.[0]?.message?.content) {
+            generatedText = data.choices[0].message.content;
+          }
+
+          if (generatedText) {
+            try {
+              const clean = generatedText.replace(/```json/g, '').replace(/```/g, '').trim();
+              const parsed = JSON.parse(clean);
+              if (parsed.thought) {
+                return {
+                  ...basePlan,
+                  thought: `${parsed.thought}`
+                };
+              }
+            } catch {
+              // use base plan if not JSON
+            }
+          }
+        }
+      } catch (err) {
+        if ((err as Error).message.includes('CallBudgetGuard')) throw err;
+        console.warn('[VisionPlanner] Azure OpenAI call fallback:', (err as Error).message);
+      }
+      return basePlan;
     }
-    // Live Gemini / OpenAI HTTP call wrapper with strict 401/403/429 status inspection
-    const model = process.env.AI_VISION_MODEL || 'gemini-2.5-flash';
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
+
+    // 2. Live Google Gemini API fallback
+    const geminiKey = process.env.AI_API_KEY;
+    if (geminiKey && geminiKey !== 'replace-with-your-vision-api-key') {
+      try {
+        const model = process.env.AI_VISION_MODEL || 'gemini-2.5-flash';
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
               {
-                text: `Task: ${prompt}. Step: ${stepIndex}. Respond with brief confirmation thought.`
+                parts: [
+                  {
+                    text: `Task: ${prompt}. Step: ${stepIndex}. Current thought: ${basePlan.thought}. Respond with brief confirmation thought.`
+                  }
+                ]
               }
             ]
-          }
-        ]
-      })
-    });
+          })
+        });
 
-    this.budget.inspectHttpStatus(response.status);
-    return this.getDeterministicDemoPlan(prompt, stepIndex);
+        this.budget.inspectHttpStatus(response.status);
+      } catch (err) {
+        if ((err as Error).message.includes('CallBudgetGuard')) throw err;
+        console.warn('[VisionPlanner] Gemini call fallback:', (err as Error).message);
+      }
+    }
+
+    return basePlan;
   }
 }
 

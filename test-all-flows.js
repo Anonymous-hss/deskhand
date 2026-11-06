@@ -30,8 +30,8 @@ async function ensureServersRunning() {
     return; // Already running
   } catch {
     console.log('[Test Runner] Starting background demo servers for automated test run...');
-    const demo = spawn('node', ['apps/chai-co-demos/dist/server.js'], { cwd: __dirname, stdio: 'ignore' });
-    const host = spawn('node', ['apps/agent-host/dist/index.js'], { cwd: __dirname, stdio: 'ignore' });
+    const demo = spawn('node', ['--env-file=.env', 'apps/chai-co-demos/dist/server.js'], { cwd: __dirname, stdio: 'ignore' });
+    const host = spawn('node', ['--env-file=.env', 'apps/agent-host/dist/index.js'], { cwd: __dirname, stdio: 'ignore' });
     spawnedProcesses = [demo, host];
     for (let i = 0; i < 30; i++) {
       await sleep(300);

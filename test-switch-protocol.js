@@ -31,8 +31,8 @@ async function main() {
   try {
     await getJson('http://localhost:4100/api/status');
   } catch {
-    const demo = spawn('node', ['apps/chai-co-demos/dist/server.js'], { cwd: __dirname, stdio: 'ignore' });
-    const host = spawn('node', ['apps/agent-host/dist/index.js'], { cwd: __dirname, stdio: 'ignore' });
+    const demo = spawn('node', ['--env-file=.env', 'apps/chai-co-demos/dist/server.js'], { cwd: __dirname, stdio: 'ignore' });
+    const host = spawn('node', ['--env-file=.env', 'apps/agent-host/dist/index.js'], { cwd: __dirname, stdio: 'ignore' });
     procs = [demo, host];
     for (let i = 0; i < 30; i++) {
       await sleep(300);
@@ -113,3 +113,4 @@ main().catch((err) => {
   for (const p of procs) { try { p.kill('SIGINT'); } catch {} }
   process.exit(1);
 });
+

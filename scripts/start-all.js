@@ -32,7 +32,7 @@ console.log('====================================================');
 startProcess(
   'Chai-Co-Demos',
   'node',
-  ['apps/chai-co-demos/dist/server.js'],
+  ['--env-file=.env', 'apps/chai-co-demos/dist/server.js'],
   ROOT
 );
 
@@ -40,7 +40,7 @@ startProcess(
 startProcess(
   'Agent-Host',
   'node',
-  ['apps/agent-host/dist/index.js'],
+  ['--env-file=.env', 'apps/agent-host/dist/index.js'],
   ROOT
 );
 
@@ -48,7 +48,7 @@ startProcess(
 startProcess(
   'Studio-UI',
   'node',
-  ['apps/windows-studio/dist/studioServer.js'],
+  ['--env-file=.env', 'apps/windows-studio/dist/studioServer.js'],
   ROOT
 );
 
@@ -72,3 +72,4 @@ function cleanShutdown() {
 
 process.on('SIGINT', cleanShutdown);
 process.on('SIGTERM', cleanShutdown);
+
