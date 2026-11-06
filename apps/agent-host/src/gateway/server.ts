@@ -19,7 +19,7 @@ import { SafetyEngine } from '../safety/safetyEngine.js';
 import { BrowserRuntime } from '../computer/browserRuntime.js';
 import { VisionPlanner } from '../vision/visionPlanner.js';
 import { ReplayGenerator } from '../media/gifGenerator.js';
-import { SwitchConnector } from '../switch/switchConnector.js';
+import { SwitchConnector, type SwitchRoomMessageEvent } from '../switch/switchConnector.js';
 import { VoiceTranscriber } from '../stt/voiceTranscriber.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -55,6 +55,29 @@ export class DeskhandGatewayServer {
     this.stt = new VoiceTranscriber(this.budget);
 
     this.switchClient.onAddressedMessage((evt) => {
+      // Check if this incoming message is answering a pending Safety Switch approval
+      if (this.activeTask?.status === 'AWAITING_APPROVAL' && this.activeTask.pendingApproval) {
+        const lower = evt.text.toLowerCase();
+        if (lower.includes('approve') || evt.text.startsWith('approve:')) {
+          this.resolveApproval(
+            this.activeTask.taskId,
+            'approve',
+            evt.senderName,
+            (evt.senderRole as TeamRole) || 'qa-lead'
+          );
+          return;
+        }
+        if (lower.includes('not now') || lower.includes('reject') || evt.text.startsWith('reject:')) {
+          this.resolveApproval(
+            this.activeTask.taskId,
+            'reject',
+            evt.senderName,
+            (evt.senderRole as TeamRole) || 'qa-lead'
+          );
+          return;
+        }
+      }
+
       void this.startTask({
         prompt: evt.text,
         senderName: evt.senderName,
@@ -303,6 +326,7 @@ export class DeskhandGatewayServer {
         });
       }
     } catch (err) {
+      console.error('[runTaskLoop error]', err);
       const msg = (err as Error).message;
       task.status = msg.includes('CallBudgetGuard') ? 'HALTED_BY_BUDGET' : 'FAILED';
       task.summary = msg;
@@ -448,6 +472,14 @@ export class DeskhandGatewayServer {
         await this.handleTakeoverInput({ ...body, taskId });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
+      if ((url.pathname === '/webhook/switch' || url.pathname === '/api/switch/events') && req.method === 'POST') {
+        const event = await this.readJsonBody<SwitchRoomMessageEvent>(req);
+        const handled = this.switchClient.handleIncomingSwitchEvent(event);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, handled }));
         return;
       }
 

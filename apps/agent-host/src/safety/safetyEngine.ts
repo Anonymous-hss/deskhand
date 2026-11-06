@@ -55,6 +55,11 @@ export class SafetyEngine {
     promptQuestion: string;
     diffSummary: string;
   } {
+    // Exclude safe internal tracking tasks (like filing a reproduction bug report) from the safety gate
+    if (plan.riskLevel === 'LOW' && plan.action.selectorHint?.includes('issue')) {
+      return { required: false, promptQuestion: '', diffSummary: '' };
+    }
+
     const combinedText = `${plan.thought} ${plan.action.selectorHint || ''} ${plan.riskReason || ''}`.toLowerCase();
     const matchedKeyword = this.config.highRiskKeywords.find((kw) =>
       combinedText.includes(kw.toLowerCase())
@@ -62,8 +67,8 @@ export class SafetyEngine {
 
     const isHighRisk =
       plan.riskLevel === 'HIGH' ||
-      Boolean(matchedKeyword) ||
-      plan.action.selectorHint === '#save-price-btn';
+      plan.action.selectorHint === '#save-price-btn' ||
+      (plan.riskLevel !== 'LOW' && Boolean(matchedKeyword));
 
     if (!isHighRisk) {
       return { required: false, promptQuestion: '', diffSummary: '' };

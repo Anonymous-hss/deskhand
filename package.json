@@ -4,16 +4,20 @@
   "private": true,
   "description": "Deskhand — An AI teammate with its own sandboxed computer for Switch, Slack, Windows & iOS",
   "license": "MIT",
+  "type": "module",
   "workspaces": [
     "packages/*",
     "apps/*"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "dev": "node scripts/start-all.js",
     "dev:demos": "npm --workspace @deskhand/chai-co-demos run dev",
     "dev:host": "npm --workspace @deskhand/agent-host run dev",
     "dev:studio": "npm --workspace @deskhand/windows-studio run dev",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test:flows && npm run test:switch",
+    "test:flows": "node test-all-flows.js",
+    "test:switch": "node test-switch-protocol.js",
     "budget:status": "node -e \"console.log(JSON.parse(require('fs').readFileSync('./data/call-budget.json', 'utf8')))\""
   },
   "engines": {

@@ -10,5 +10,6 @@ DerivedData/
 *.xcuserdata
 apps/agent-host/captures/*.png
 apps/agent-host/captures/*.gif
+apps/agent-host/captures/*.svg
 !apps/agent-host/captures/.gitkeep
 
