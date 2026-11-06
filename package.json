@@ -2,7 +2,7 @@
   "name": "deskhand-monorepo",
   "version": "0.1.0",
   "private": true,
-  "description": "Deskhand — An AI teammate with its own sandboxed computer for Switch, Slack, Windows & iOS",
+  "description": "Deskhand \u2014 An AI teammate with its own sandboxed computer for Switch, Slack, Windows & iOS",
   "license": "MIT",
   "type": "module",
   "workspaces": [
@@ -11,15 +11,20 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "dev": "node --env-file=.env scripts/start-all.js",
+    "dev": "node --env-file-if-exists=.env scripts/start-all.js",
     "dev:demos": "npm --workspace @deskhand/chai-co-demos run dev",
-    "dev:host": "npm --workspace @deskhand/agent-host run dev",
+    "dev:host": "node --env-file-if-exists=.env --import tsx apps/agent-host/src/index.ts",
     "dev:studio": "npm --workspace @deskhand/windows-studio run dev",
-    "test": "npm run test:budget && npm run test:flows && npm run test:switch",
+    "test": "npm run build && npm run test:budget && npm run test --workspaces --if-present",
     "test:budget": "node test-budget-guard.js",
     "test:flows": "node test-all-flows.js",
     "test:switch": "node test-switch-protocol.js",
-    "budget:status": "node -e \"console.log(JSON.parse(require('fs').readFileSync('./data/call-budget.json', 'utf8')))\""
+    "budget:status": "node -e \"console.log(JSON.parse(require('fs').readFileSync('./data/call-budget.json', 'utf8')))\"",
+    "test:integration": "npm run test:flows && npm run test:generalized",
+    "test:azure": "node --env-file-if-exists=.env test-azure-live.js",
+    "config:check": "node --env-file-if-exists=.env scripts/check-config.js",
+    "test:generalized": "node test-generalized-agent.js",
+    "readiness": "node --env-file-if-exists=.env scripts/readiness.js"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -29,4 +34,3 @@
     "typescript": "^5.6.3"
   }
 }
-

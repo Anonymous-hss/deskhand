@@ -67,6 +67,7 @@ export interface VisionAction {
 
 export interface VisionPlanOutput {
   thought: string;
+  result?: string;
   action: VisionAction;
   riskLevel: RiskLevel;
   riskReason?: string;
@@ -96,6 +97,9 @@ export interface ApprovalRequest {
   allowedRoles: TeamRole[];
   createdAt: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  expiresAt?: string;
+  actionDigest?: string;
+  observedDiff?: { before: string; after: string; field: string };
   resolvedBy?: string;
   resolvedAt?: string;
 }
@@ -121,9 +125,30 @@ export interface BugReportDraft {
   filedUrl?: string;
 }
 
+export interface ObservedError {
+  stepNumber: number;
+  timestamp: string;
+  pageUrl: string;
+  screenshotUrl: string;
+  errorText: string;
+}
+export interface OutcomeVerification {
+  kind: 'issue_created' | 'price_saved' | 'price_unchanged';
+  verifiedAt: string;
+  pageUrl: string;
+  observedValue: string;
+  expectedValue?: string;
+}
 export interface DeskhandTask {
   taskId: string;
   roomId: string;
+  threadId?: string;
+  requestId?: string;
+  parentTaskId?: string;
+  intent?: 'file_issue';
+  observedErrors?: ObservedError[];
+  verification?: OutcomeVerification;
+  evidenceUrl?: string;
   prompt: string;
   senderName: string;
   senderRole: TeamRole;
@@ -137,6 +162,7 @@ export interface DeskhandTask {
   bugReport?: BugReportDraft;
   summary?: string;
   replayGifUrl?: string;
+  voiceNoteUrl?: string;
   callsUsed: number;
 }
 
@@ -153,6 +179,12 @@ export interface CallBudgetStatus {
 }
 
 export interface HostStatusPayload {
+  coordination?: {
+    mode: 'console_managed' | 'direct_legacy';
+    hostLinkRequired: boolean;
+    lastAgentContactAt: string | null;
+    description: string;
+  };
   switchConnected: boolean;
   switchMode: 'stream' | 'rest_fallback';
   lastHeartbeatAt: string | null;

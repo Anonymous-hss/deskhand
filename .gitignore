@@ -13,3 +13,13 @@ apps/agent-host/captures/*.gif
 apps/agent-host/captures/*.svg
 !apps/agent-host/captures/.gitkeep
 
+
+apps/agent-host/captures/*.m4a
+apps/agent-host/captures/*.svg
+xcuserdata/
+
+ios/DeskhandMobile/Configuration/LocalSigning.xcconfig
+
+.deskhand/
+
+apps/agent-host/captures/videos/

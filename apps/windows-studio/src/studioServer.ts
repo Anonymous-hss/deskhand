@@ -1,4 +1,7 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const STUDIO_PORT = Number(process.env.STUDIO_PORT || 4200);
 const HOST_API = process.env.HOST_API || 'http://localhost:4100';
@@ -8,7 +11,7 @@ function renderStudioHtml(): string {
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Deskhand Studio for Windows — Operator & Sandbox Controller</title>
+  <title>Deskhand Studio — Operator & Sandbox Controller</title>
   <style>
     * { box-sizing: border-box; font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif; }
     body { margin: 0; background: #090d16; color: #f8fafc; }
@@ -36,7 +39,7 @@ function renderStudioHtml(): string {
 <body>
   <header>
     <div class="logo">
-      🖥️ Deskhand Studio for Windows
+      🖥️ Deskhand Studio
       <span class="pill" id="ws-indicator">Connecting...</span>
       <span class="pill" id="heartbeat-pill">Switch 2s Heartbeat: --</span>
     </div>
@@ -97,11 +100,11 @@ function renderStudioHtml(): string {
       </div>
 
       <div>
-        <h3>🔌 Switch Protocol Mode (Nov 6 Noon Fallback)</h3>
-        <div style="display:flex;gap:8px">
-          <button class="btn btn-scene" style="text-align:center;margin:0" onclick="setSwitchMode('stream')">SSE Stream + 2s HB</button>
-          <button class="btn btn-scene" style="text-align:center;margin:0" onclick="setSwitchMode('rest_fallback')">POST /agents/:id/message</button>
-        </div>
+        <h3>🔌 Team coordination</h3>
+        <p id="coordination-status" style="font-size:13px;line-height:1.6">Slack → Switch Console → Deskhand coordinator → browser host</p>
+        <p style="font-size:12px;color:#94a3b8">Azure browser calls are counted below. Claude coordinator usage is separate.</p>
+        <button class="btn btn-scene" onclick="pairPhone()">Pair iPhone operator</button>
+        <div id="pairing-code" style="font-size:18px;font-weight:bold"></div>
       </div>
 
       <div>
@@ -158,8 +161,20 @@ function renderStudioHtml(): string {
   </div>
 
   <script>
-    const HOST = '${HOST_API}';
+    const HOST = '/host';
     let currentTaskId = null;
+    let currentTask = null;
+    function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+    async function request(path, body) {
+      const response = await fetch(HOST + path, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body || {}) });
+      const data = await response.json();
+      if (!response.ok) { alert(data.error || 'Request failed'); throw new Error(data.error || 'Request failed'); }
+      return data;
+    }
+    async function pairPhone() {
+      const result = await request('/api/pairing-code');
+      document.getElementById('pairing-code').textContent = 'Code: ' + result.code + ' · expires in 5 minutes';
+    }
 
     function getPersona() {
       const val = document.getElementById('persona-select').value;
@@ -169,11 +184,9 @@ function renderStudioHtml(): string {
 
     async function runScene(prompt, source = 'windows_studio') {
       const p = getPersona();
-      await fetch(HOST + '/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, senderName: p.name, senderRole: p.role, source })
-      });
+      await request('/api/tasks', { prompt, senderName: p.name, senderRole: p.role, source,
+        parentTaskId: /file it/i.test(prompt) ? currentTask?.taskId : undefined,
+        roomId: currentTask?.roomId || 'ops', threadId: currentTask?.threadId });
     }
 
     function sendCustomPrompt() {
@@ -190,7 +203,7 @@ function renderStudioHtml(): string {
       const res = await fetch(HOST + '/api/tasks/' + currentTaskId + '/approval', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision, responderName: p.name, responderRole: p.role })
+        body: JSON.stringify({ decision, approvalId: currentTask.pendingApproval.approvalId })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -226,6 +239,7 @@ function renderStudioHtml(): string {
     function renderTask(task) {
       if (!task) return;
       currentTaskId = task.taskId;
+      currentTask = task;
       document.getElementById('active-task-badge').textContent = task.status + ' • ' + task.taskId;
 
       if (task.status === 'AWAITING_APPROVAL' && task.pendingApproval) {
@@ -251,7 +265,7 @@ function renderStudioHtml(): string {
             '<div class="step-item"><strong>Step ' +
             s.stepNumber +
             ':</strong> ' +
-            s.thought +
+            escapeHtml(s.thought) +
             '</div>'
         )
         .join('');
@@ -260,10 +274,14 @@ function renderStudioHtml(): string {
         stepsContainer.innerHTML +=
           '<div class="step-item" style="border-color:#ef4444;background:#450a0a">' +
           '<strong>🐞 Ready-to-File Bug Report:</strong><br/>' +
-          task.bugReport.title +
+          escapeHtml(task.bugReport.title) +
           '<br/><button class="btn" style="margin-top:8px;background:#f59e0b;color:#0f172a" onclick="runScene(\\'file it in the issue tracker\\')">File it now</button></div>';
       }
 
+      if (task.summary) stepsContainer.innerHTML += '<div class="step-item"><strong>Outcome:</strong> ' + escapeHtml(task.summary) + '</div>';
+      if (task.verification) stepsContainer.innerHTML += '<div class="step-item"><strong>Verified on page:</strong> ' + escapeHtml(task.verification.observedValue) + '</div>';
+      if (task.bugReport?.filedUrl) stepsContainer.innerHTML += '<div class="step-item"><a style="color:#38bdf8" target="_blank" rel="noopener" href="' + escapeHtml(task.bugReport.filedUrl) + '">Open verified issue</a></div>';
+      if (task.evidenceUrl) stepsContainer.innerHTML += '<div class="step-item"><a style="color:#38bdf8" target="_blank" href="' + HOST + task.evidenceUrl + '">Open evidence packet</a><br/>Room: ' + escapeHtml(task.roomId) + '<br/>Thread: ' + escapeHtml(task.threadId || 'local operator') + '</div>';
       const lastStep = task.steps && task.steps[task.steps.length - 1];
       const imgUrl = task.replayGifUrl || (lastStep && lastStep.screenshotUrl);
       if (imgUrl) {
@@ -278,8 +296,9 @@ function renderStudioHtml(): string {
       document.getElementById('budget-fill').style.width = Math.min(100, (b.usedCalls / b.maxCalls) * 100) + '%';
       document.getElementById('budget-breakdown').textContent =
         'Vision: ' + b.breakdown.vision + ' • STT: ' + b.breakdown.stt + ' • Mode: ' + status.switchMode;
-      document.getElementById('heartbeat-pill').textContent =
-        'Switch Mode: ' + status.switchMode + ' • HB: ' + (status.lastHeartbeatAt ? status.lastHeartbeatAt.slice(11, 19) : 'active');
+      const coordination = status.coordination;
+      document.getElementById('heartbeat-pill').textContent = coordination?.mode === 'console_managed' ? 'Switch via Console-managed agent' : 'Legacy host connector';
+      document.getElementById('coordination-status').textContent = coordination?.description + (coordination?.lastAgentContactAt ? ' Last coordinator request: ' + coordination.lastAgentContactAt : ' Awaiting an authenticated coordinator request.');
       document.getElementById('allowlist-box').innerHTML = (status.allowlist || [])
         .map((h) => '✅ <code>' + h + '</code>')
         .join('<br/>');
@@ -316,12 +335,28 @@ function renderStudioHtml(): string {
 </html>`;
 }
 
-const server = http.createServer((_req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+const server = http.createServer(async (req, res) => {
+  const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress || '');
+  if (!local) { res.writeHead(403); res.end('Studio is restricted to the local operator. Pair the iPhone for LAN access.'); return; }
+  const origin = req.headers.origin;
+  if (origin && ![`http://localhost:${STUDIO_PORT}`, `http://127.0.0.1:${STUDIO_PORT}`].includes(origin)) { res.writeHead(403); res.end('Origin not permitted'); return; }
+  if (req.url?.startsWith('/host/api/') || req.url?.startsWith('/host/captures/')) {
+    try {
+      const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../.deskhand/client-credentials.json');
+      const credentials = JSON.parse(fs.readFileSync(process.env.DESKHAND_STATE_DIR ? path.join(process.env.DESKHAND_STATE_DIR, 'client-credentials.json') : file, 'utf8'));
+      const operator = credentials.find((principal: { kind: string }) => principal.kind === 'operator');
+      const chunks: Buffer[] = []; let size = 0;
+      for await (const chunk of req) { size += chunk.length; if (size > 8 * 1024 * 1024) throw new Error('Request too large'); chunks.push(Buffer.from(chunk)); }
+      const response = await fetch(HOST_API + req.url.slice(5), {
+        method: req.method, headers: { Authorization: `Bearer ${operator.token}`, 'Content-Type': 'application/json' },
+        ...(req.method !== 'GET' ? { body: Buffer.concat(chunks) } : {})
+      });
+      res.writeHead(response.status, { 'Content-Type': response.headers.get('content-type') || 'application/json', 'Cache-Control':'no-store' });
+      res.end(Buffer.from(await response.arrayBuffer()));
+    } catch { res.writeHead(502, { 'Content-Type':'application/json' }); res.end(JSON.stringify({ error: 'Start the browser host before using Studio.' })); }
+    return;
+  }
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(renderStudioHtml());
 });
-
-server.listen(STUDIO_PORT, () => {
-  console.log(`[Deskhand Windows Studio UI] Running at http://localhost:${STUDIO_PORT}`);
-});
-
+server.listen(STUDIO_PORT, '127.0.0.1', () => console.log(`[Deskhand Studio] Local operator dashboard: http://localhost:${STUDIO_PORT}`));

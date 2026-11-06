@@ -273,14 +273,15 @@ function renderAdminPage(savedBanner: boolean, otpError: boolean): string {
 }
 
 function renderIssuesPage(createdId: string | null): string {
+  const escape = (value: string) => value.replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]!));
   const rows = state.issues
     .map(
       (iss) => `
-      <tr style="border-bottom:1px solid #334155">
-        <td style="padding:12px;font-weight:800;color:#38bdf8">#${iss.id}</td>
-        <td style="padding:12px;font-weight:700">${iss.title}</td>
+      <tr data-issue-id="${iss.id}" style="border-bottom:1px solid #334155">
+        <td style="padding:12px;font-weight:800;color:#38bdf8"><a href="/issues/${iss.id}">#${iss.id}</a></td>
+        <td style="padding:12px;font-weight:700">${escape(iss.title)}</td>
         <td style="padding:12px"><span class="badge" style="background:#ef444433;color:#fca5a5">${iss.severity}</span></td>
-        <td style="padding:12px;color:#94a3b8;font-size:13px">${iss.steps}</td>
+        <td style="padding:12px;color:#94a3b8;font-size:13px">${escape(iss.steps)}</td>
         <td style="padding:12px;color:#10b981;font-weight:700">${iss.status}</td>
       </tr>`
     )
@@ -437,6 +438,15 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(302, { Location: '/admin?saved=1' });
     res.end();
+    return;
+  }
+
+  if (/^\/issues\/CHAI-\d+$/.test(url.pathname) && req.method === 'GET') {
+    const issue = state.issues.find(item => item.id === url.pathname.split('/').pop());
+    if (!issue) { res.writeHead(404); res.end('Issue not found'); return; }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    const escape = (value: string) => value.replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]!));
+    res.end(`<html><head><title>${issue.id}</title></head><body><h1>${escape(issue.id)}: ${escape(issue.title)}</h1><p>${escape(issue.severity)} · ${escape(issue.status)}</p><pre>${escape(issue.steps)}</pre><a href="/issues">All issues</a></body></html>`);
     return;
   }
 

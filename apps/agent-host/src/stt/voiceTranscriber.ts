@@ -25,20 +25,6 @@ export class VoiceTranscriber {
       };
     }
 
-    if (process.env.VISION_MODE === 'live') {
-      this.budget.consumeCall('stt');
-      return {
-        transcript:
-          'update the masala chai price to 249 in the store admin and tell the team',
-        consumedApiCall: true
-      };
-    }
-
-    return {
-      transcript:
-        'update the masala chai price to 249 in the store admin and tell the team',
-      consumedApiCall: false
-    };
+    throw new Error('An on-device transcript is required. Raw audio transcription is not configured; no command was created and no STT call was charged.');
   }
 }
-

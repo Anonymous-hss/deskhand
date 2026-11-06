@@ -14,8 +14,9 @@ let package = Package(
         .target(
             name: "DeskhandMobile",
             path: ".",
-            exclude: ["Package.swift"]
-        )
+            exclude: ["Package.swift", "DeskhandMobileApp.swift", "Tests", "Configuration", "Widgets", "DeskhandMobile.xcodeproj", "README.md"]
+        ),
+        .testTarget(name: "DeskhandMobileTests", dependencies: ["DeskhandMobile"], path: "Tests")
     ]
 )
 

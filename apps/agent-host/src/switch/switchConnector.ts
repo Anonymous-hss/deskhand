@@ -26,6 +26,8 @@ export class SwitchConnector {
   private connected = false;
   private lastHeartbeatAt: string | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private streamController: AbortController | null = null;
+  private seenEvents = new Set<string>();
   private onAddressedCallback?: (evt: SwitchRoomMessageEvent) => void;
 
   constructor() {
@@ -45,7 +47,9 @@ export class SwitchConnector {
 
   public setMode(newMode: 'stream' | 'rest_fallback'): void {
     this.mode = newMode;
-    console.log(`[SwitchConnector] Switched protocol mode to: ${this.mode}`);
+    this.streamController?.abort();
+    this.streamController = null;
+    if (newMode === 'stream' && this.heartbeatTimer) this.startEventStream();
   }
 
   public getLastHeartbeatAt(): string | null {
@@ -60,6 +64,12 @@ export class SwitchConnector {
    * Registers Deskhand once with the local Switch Console server and starts the 2s heartbeat.
    */
   public async start(): Promise<void> {
+    await this.register();
+    this.startHeartbeatLoop();
+    if (this.mode === 'stream') this.startEventStream();
+  }
+
+  private async register(): Promise<void> {
     try {
       const res = await fetch(`${this.serverUrl}/agents/register`, {
         method: 'POST',
@@ -80,7 +90,6 @@ export class SwitchConnector {
       this.connected = false;
     }
 
-    this.startHeartbeatLoop();
   }
 
   /**
@@ -89,6 +98,7 @@ export class SwitchConnector {
   private startHeartbeatLoop(): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = setInterval(async () => {
+      if (!this.connected) await this.register();
       this.lastHeartbeatAt = new Date().toISOString();
       try {
         const res = await fetch(`${this.serverUrl}/agents/${this.agentId}/heartbeat`, {
@@ -98,7 +108,7 @@ export class SwitchConnector {
         });
         this.connected = res.ok;
       } catch {
-        // Keep local timestamp updated for studio diagnostics even when Switch Console is offline
+        this.connected = false;
       }
     }, 2000);
   }
@@ -108,12 +118,17 @@ export class SwitchConnector {
    * Strictly enforces the rule: act ONLY when `addressed === true`.
    */
   public handleIncomingSwitchEvent(event: SwitchRoomMessageEvent): boolean {
-    if (!event.addressed) {
+    if (event?.addressed !== true || typeof event.text !== 'string' || !event.text.trim() ||
+        typeof event.roomId !== 'string' || typeof event.senderName !== 'string') {
       return false;
     }
-    if (this.onAddressedCallback) {
-      this.onAddressedCallback(event);
+    const eventKey = event.eventId ? `${event.roomId}:${event.eventId}` : undefined;
+    if (eventKey && this.seenEvents.has(eventKey)) return false;
+    if (eventKey) {
+      this.seenEvents.add(eventKey);
+      if (this.seenEvents.size > 1000) this.seenEvents.delete(this.seenEvents.values().next().value!);
     }
+    if (this.onAddressedCallback) this.onAddressedCallback(event);
     return true;
   }
 
@@ -133,7 +148,7 @@ export class SwitchConnector {
         : `${this.serverUrl}/rooms/${params.roomId}/post_message`;
 
     try {
-      await fetch(endpoint, {
+      const response = await fetch(endpoint, {
         method: 'POST',
         signal: AbortSignal.timeout(800),
         headers: {
@@ -148,13 +163,59 @@ export class SwitchConnector {
           buttons: params.buttons
         })
       });
+      if (!response.ok && this.mode === 'stream') {
+        const fallback = await fetch(`${this.serverUrl}/agents/${this.agentId}/message`, {
+          method: 'POST', signal: AbortSignal.timeout(800),
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` },
+          body: JSON.stringify({ agentId: this.agentId, ...params })
+        });
+        if (!fallback.ok) throw new Error('Switch rejected the message');
+      } else if (!response.ok) throw new Error('Switch rejected the message');
     } catch {
       // Logged locally when running without Switch Console open
       console.log(`[Switch -> #${params.roomId}] ${params.text}${params.mediaUrl ? ` [Media: ${params.mediaUrl}]` : ''}`);
     }
   }
 
+  /** SSE reconnects independently of the host/iOS WebSocket. Webhooks remain supported. */
+  private startEventStream(): void {
+    this.streamController?.abort();
+    const controller = new AbortController();
+    this.streamController = controller;
+    const streamPath = process.env.SWITCH_EVENTS_PATH || `/agents/${this.agentId}/events`;
+    const endpoint = new URL(streamPath, this.serverUrl);
+    if (endpoint.origin !== new URL(this.serverUrl).origin) return;
+    void (async () => {
+      let delay = 1000;
+      while (!controller.signal.aborted) {
+        try {
+          const response = await fetch(endpoint, {
+            headers: { Accept: 'text/event-stream', Authorization: `Bearer ${this.token}` },
+            signal: controller.signal
+          });
+          if (!response.ok || !response.body) throw new Error('Switch event stream unavailable');
+          for await (const payload of decodeSSE(response.body)) {
+            if (controller.signal.aborted) return;
+            try {
+              const message = JSON.parse(payload);
+              this.handleIncomingSwitchEvent(message.data ?? message);
+            } catch { /* Ignore malformed events and keep reading the stream. */ }
+          }
+          delay = 1000;
+        } catch { if (controller.signal.aborted) return; }
+        await new Promise<void>((resolve) => {
+          const finish = () => { clearTimeout(timer); controller.signal.removeEventListener('abort', finish); resolve(); };
+          const timer = setTimeout(finish, delay);
+          controller.signal.addEventListener('abort', finish, { once: true });
+        });
+        delay = Math.min(delay * 2, 16000);
+      }
+    })();
+  }
+
   public stop(): void {
+    this.streamController?.abort(); this.streamController = null;
+    this.connected = false;
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
@@ -162,3 +223,31 @@ export class SwitchConnector {
   }
 }
 
+
+/** Streaming TextDecoder preserves UTF-8 characters split across network chunks. */
+export async function* decodeSSE(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let data: string[] = [];
+  let eventSize = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let newline: number;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '');
+        buffer = buffer.slice(newline + 1);
+        if (line === '') { if (data.length) yield data.join('\n'); data = []; eventSize = 0; }
+        else if (line.startsWith('data:')) {
+          eventSize += line.length;
+          if (eventSize > 1024 * 1024) throw new Error('Switch event exceeds 1 MB');
+          data.push(line.slice(5).replace(/^ /, ''));
+        }
+      }
+      if (buffer.length > 1024 * 1024) throw new Error('Switch event exceeds 1 MB');
+      if (done) break;
+    }
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}

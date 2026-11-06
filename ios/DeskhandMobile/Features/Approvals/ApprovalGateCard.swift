@@ -3,86 +3,66 @@ import SwiftUI
 public struct ApprovalGateCard: View {
     let approval: ApprovalRequest
     let currentPersona: TeamPersona
+    var isDemo = false
+    var host = "http://localhost:4100"
+    var isSubmitting = false
     let onDecision: (String) -> Void
-
-    public init(
-        approval: ApprovalRequest,
-        currentPersona: TeamPersona,
-        onDecision: @escaping (String) -> Void
-    ) {
-        self.approval = approval
-        self.currentPersona = currentPersona
-        self.onDecision = onDecision
+    @State private var authenticating = false
+    @State private var authGeneration = UUID()
+    @State private var authError: String?
+    public init(approval: ApprovalRequest, currentPersona: TeamPersona, isDemo: Bool = false,
+                host: String = "http://localhost:4100", isSubmitting: Bool = false, onDecision: @escaping (String) -> Void) {
+        self.approval = approval; self.currentPersona = currentPersona; self.isDemo = isDemo
+        self.host = host; self.isSubmitting = isSubmitting; self.onDecision = onDecision
     }
-
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("🛑 SAFETY SWITCH — APPROVAL NEEDED")
-                    .font(.caption.bold())
-                    .foregroundStyle(.orange)
-                Spacer()
-                Text("Role: \(currentPersona.role.rawValue)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            Label("Approval needed", systemImage: "hand.raised.fill").font(.caption.bold()).foregroundStyle(.orange)
+            Text(approval.promptQuestion).font(.headline)
+            if let diff = approval.observedDiff {
+                Text("\(diff.field): \(diff.before) → \(diff.after)").font(.title3.bold())
+            } else { Text(approval.diffSummary).font(.title3.bold()) }
+            if let expiresAt = approval.expiresAt { Text("Approval expires: " + expiresAt).font(.caption).foregroundStyle(.secondary) }
+            Text(approval.targetUrl).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            if !approval.screenshotUrl.isEmpty {
+                AsyncImage(url: HostAddress.mediaURL(approval.screenshotUrl, host: host)) { image in
+                    image.resizable().scaledToFit()
+                } placeholder: { Label("Approval screenshot loading", systemImage: "photo") }
+                    .accessibilityLabel("Browser paused before saving the change")
             }
-
-            Text(approval.promptQuestion)
-                .font(.headline.bold())
-
-            Text(approval.diffSummary)
-                .font(.subheadline)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.black.opacity(0.35))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            if currentPersona.canApprove {
-                HStack(spacing: 12) {
-                    Button {
-                        Task {
-                            let ok = await BiometricAuthHelper.authenticateApproval(
-                                reason: approval.promptQuestion
-                            )
-                            if ok {
-                                onDecision("approve")
-                            }
-                        }
-                    } label: {
-                        Text("✅ Approve")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.black)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(Color.green)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-
-                    Button {
-                        onDecision("reject")
-                    } label: {
-                        Text("✋ Not now")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(Color.red)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
+            if approval.allowedRoles.contains(currentPersona.role) {
+                ViewThatFits(in: .horizontal) {
+                    HStack { approveButton; rejectButton }
+                    VStack { approveButton; rejectButton }
                 }
             } else {
-                Text("🔒 Switch persona to Priya (qa-lead) or Rahul (admin) to approve risky actions.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                Label("Requires: " + approval.allowedRoles.map(\.rawValue).joined(separator: ", "), systemImage: "lock")
+                    .font(.caption).foregroundStyle(.orange)
             }
-        }
-        .padding(14)
-        .background(Color.orange.opacity(0.14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.orange, lineWidth: 2)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+            if let authError { Text(authError).font(.caption).foregroundStyle(.orange) }
+        }.padding().background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(.orange, lineWidth: 1))
+            .onChange(of: currentPersona.id) { authGeneration = UUID(); authenticating = false }
+            .onChange(of: approval.approvalId) { authGeneration = UUID(); authenticating = false }
+            .onDisappear { authGeneration = UUID() }
+    }
+    private var approveButton: some View {
+        Button(authenticating ? "Authenticating…" : "Approve") {
+            let token = UUID(); authGeneration = token
+            authenticating = true; authError = nil
+            Task { @MainActor in
+                let allowed: Bool
+                if isDemo { allowed = true }
+                else { allowed = await BiometricAuthHelper.authenticateApproval(reason: approval.promptQuestion) }
+                authenticating = false
+                guard token == authGeneration else { return }
+                if allowed { onDecision("approve") }
+                else { authError = "Authentication was cancelled or unavailable. No approval was sent." }
+            }
+        }.buttonStyle(.borderedProminent).tint(.green).disabled(authenticating || isSubmitting)
+    }
+    private var rejectButton: some View {
+        Button("Not now", role: .destructive) { onDecision("reject") }
+            .buttonStyle(.bordered).disabled(authenticating || isSubmitting)
     }
 }
-

@@ -1,70 +1,74 @@
 import SwiftUI
 
 public struct VoiceCommandBar: View {
-    @State private var textPrompt: String = ""
+    @State private var textPrompt = ""
+    @State private var isVoiceDraft = false
     @State private var voiceService = VoiceNoteService()
-    let onSendPrompt: (String, Bool) -> Void
-
-    public init(onSendPrompt: @escaping (String, Bool) -> Void) {
-        self.onSendPrompt = onSendPrompt
-    }
-
+    @State private var holding = false
+    @State private var isSending = false
+    let onSendPrompt: (String, Bool, String?) async -> Bool
+    public init(onSendPrompt: @escaping (String, Bool, String?) async -> Bool) { self.onSendPrompt = onSendPrompt }
     public var body: some View {
-        VStack(spacing: 8) {
-            if voiceService.isRecording {
-                HStack {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 10, height: 10)
-                    Text("🎙️ On-Device STT (0 API Calls): \(voiceService.liveTranscript)")
-                        .font(.caption.bold())
-                        .foregroundStyle(.orange)
-                    Spacer()
-                }
-                .padding(.horizontal, 14)
+        VStack(alignment: .leading, spacing: 8) {
+            if voiceService.isRecording || voiceService.isStarting {
+                Label(voiceService.liveTranscript.isEmpty ? "Listening on device…" : voiceService.liveTranscript,
+                      systemImage: "waveform")
+                    .font(.callout).foregroundStyle(.orange)
+                ProgressView(value: Double(voiceService.level)).tint(.orange).accessibilityLabel("Microphone level")
+                Button("Finish recording") { finish() }
             }
-
-            HStack(spacing: 10) {
+            if let error = voiceService.errorMessage { Text(error).font(.caption).foregroundStyle(.orange) }
+            if isVoiceDraft { Text("Voice transcript · review before sending · 0 STT API calls").font(.caption).foregroundStyle(.secondary) }
+            HStack(alignment: .bottom) {
                 Button {
-                    if voiceService.isRecording {
-                        let transcript = voiceService.stopRecording()
-                        onSendPrompt(transcript, true)
-                    } else {
-                        voiceService.startRecording()
-                    }
+                    if voiceService.isRecording { finish() }
+                    else { Task { await voiceService.startRecording() } }
                 } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: voiceService.isRecording ? "stop.circle.fill" : "mic.fill")
-                        Text(voiceService.isRecording ? "Send Voice" : "Voice")
-                            .font(.caption.bold())
+                    Image(systemName: voiceService.isRecording ? "stop.circle.fill" : "mic.fill")
+                        .font(.title2).frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityLabel(voiceService.isRecording ? "Finish recording" : "Record voice command")
+                .accessibilityHint("Tap to start and stop, or hold to record. Review the transcript before sending.")
+                .highPriorityGesture(DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !holding else { return }
+                        holding = true
+                        Task { await voiceService.startRecording() }
                     }
-                    .foregroundStyle(voiceService.isRecording ? .white : .black)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(voiceService.isRecording ? Color.red : Color.orange)
-                    .clipShape(Capsule())
-                }
-
-                TextField("Ask @deskhand...", text: $textPrompt)
-                    .padding(10)
-                    .background(Color.white.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                Button {
-                    let trimmed = textPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else { return }
-                    onSendPrompt(trimmed, false)
-                    textPrompt = ""
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.orange)
-                }
+                    .onEnded { _ in holding = false; finish() })
+                TextField("Ask Deskhand…", text: $textPrompt, axis: .vertical)
+                    .lineLimit(1...4).textFieldStyle(.roundedBorder)
+                Button { send() } label: { Image(systemName: "arrow.up.circle.fill").font(.title).frame(minWidth: 44, minHeight: 44) }
+                    .accessibilityLabel("Send command")
+                    .disabled(textPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || voiceService.isRecording)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color(red: 0.08, green: 0.11, blue: 0.18))
+        }
+        .disabled(isSending)
+        .padding().background(.bar)
+        .onChange(of: voiceService.isRecording) {
+            if !voiceService.isRecording, !voiceService.liveTranscript.isEmpty {
+                textPrompt = voiceService.liveTranscript; isVoiceDraft = true
+            }
+        }
+        .onDisappear { voiceService.cancel() }
+    }
+    private func finish() {
+        voiceService.stopRecording()
+        let transcript = voiceService.liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !transcript.isEmpty { textPrompt = transcript; isVoiceDraft = true }
+    }
+    private func send() {
+        let text = textPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard !isSending else { return }
+        let voice = isVoiceDraft
+        let audio = voice ? voiceService.audioBase64 : nil
+        isSending = true
+        Task { @MainActor in
+            defer { isSending = false }
+            if await onSendPrompt(text, voice, audio) {
+                textPrompt = ""; isVoiceDraft = false
+            }
         }
     }
 }
-

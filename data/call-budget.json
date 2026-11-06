@@ -1,11 +1,11 @@
 {
   "maxCalls": 150,
-  "usedCalls": 0,
+  "usedCalls": 16,
   "breakdown": {
-    "vision": 0,
+    "vision": 16,
     "stt": 0
   },
   "halted": false,
   "haltReason": null,
-  "lastUpdatedAt": "2026-11-06T14:11:00+05:30"
+  "lastUpdatedAt": "2026-11-06T21:22:46.887Z"
 }

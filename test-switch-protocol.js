@@ -10,12 +10,16 @@ async function postJson(url, data) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   });
-  return res.json();
+  const result = await res.json();
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${result.error || 'Request failed'}`);
+  return result;
 }
 
 async function getJson(url) {
   const res = await fetch(url);
-  return res.json();
+  const result = await res.json();
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${result.error || 'Request failed'}`);
+  return result;
 }
 
 async function sleep(ms) {
@@ -31,8 +35,8 @@ async function main() {
   try {
     await getJson('http://localhost:4100/api/status');
   } catch {
-    const demo = spawn('node', ['--env-file=.env', 'apps/chai-co-demos/dist/server.js'], { cwd: __dirname, stdio: 'ignore' });
-    const host = spawn('node', ['--env-file=.env', 'apps/agent-host/dist/index.js'], { cwd: __dirname, stdio: 'ignore' });
+    const demo = spawn('node', ['--env-file-if-exists=.env', 'apps/chai-co-demos/dist/server.js'], { cwd: __dirname, stdio: 'ignore', env: { ...process.env, VISION_MODE: 'mock', SWITCH_SERVER_URL: 'http://127.0.0.1:17700' } });
+    const host = spawn('node', ['--env-file-if-exists=.env', 'apps/agent-host/dist/index.js'], { cwd: __dirname, stdio: 'ignore', env: { ...process.env, VISION_MODE: 'mock', SWITCH_SERVER_URL: 'http://127.0.0.1:17700' } });
     procs = [demo, host];
     for (let i = 0; i < 30; i++) {
       await sleep(300);
@@ -104,6 +108,8 @@ async function main() {
     }
   }
 
+  const final = await getJson('http://localhost:4100/api/status');
+  if (final.activeTask?.status !== 'COMPLETED') throw new Error('Chat approval did not complete the task');
   console.log('\n🎉 SWITCH AGENT PROTOCOL TEST PASSED!');
   for (const p of procs) { try { p.kill('SIGINT'); } catch {} }
 }

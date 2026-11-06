@@ -12,6 +12,8 @@ public struct ApprovalRequest: Codable, Identifiable, Sendable {
     public let allowedRoles: [TeamRole]
     public var status: String
     public var resolvedBy: String?
+    public var expiresAt: String? = nil
+    public var observedDiff: ApprovalDiff? = nil
 }
 
 public struct TeamPersona: Identifiable, Sendable {
@@ -28,3 +30,9 @@ public struct TeamPersona: Identifiable, Sendable {
     ]
 }
 
+
+public struct ApprovalDiff: Codable, Sendable {
+    public let before: String
+    public let after: String
+    public let field: String
+}

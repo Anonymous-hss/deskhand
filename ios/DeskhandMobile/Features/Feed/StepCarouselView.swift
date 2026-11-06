@@ -3,6 +3,7 @@ import SwiftUI
 public struct StepCarouselView: View {
     let steps: [TaskStep]
     let hostBaseURL: String
+    @State private var selectedStep: TaskStep?
 
     public init(steps: [TaskStep], hostBaseURL: String) {
         self.steps = steps
@@ -10,7 +11,8 @@ public struct StepCarouselView: View {
     }
 
     public var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollViewReader { proxy in
+        ScrollView(.horizontal) {
             HStack(spacing: 12) {
                 ForEach(steps) { step in
                     VStack(alignment: .leading, spacing: 8) {
@@ -29,7 +31,8 @@ public struct StepCarouselView: View {
                                 .lineLimit(1)
                         }
 
-                        AsyncImage(url: URL(string: hostBaseURL + step.screenshotUrl)) { phase in
+                        Button { selectedStep = step } label: {
+                        AsyncImage(url: step.screenshotUrl.isEmpty ? nil : HostAddress.mediaURL(step.screenshotUrl, host: hostBaseURL)) { phase in
                             switch phase {
                             case .success(let image):
                                 image
@@ -39,7 +42,7 @@ public struct StepCarouselView: View {
                                 ZStack {
                                     RoundedRectangle(cornerRadius: 8)
                                         .fill(Color.black.opacity(0.4))
-                                    Text("📸 Step \(step.stepNumber) Screenshot")
+                                    Text(step.screenshotUrl.isEmpty ? "Demo · \(step.thought)" : "Screenshot unavailable")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -47,6 +50,10 @@ public struct StepCarouselView: View {
                         }
                         .frame(width: 260, height: 162)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Inspect screenshot for step \(step.stepNumber)")
+                        .disabled(step.screenshotUrl.isEmpty)
 
                         Text(step.thought)
                             .font(.caption)
@@ -57,9 +64,15 @@ public struct StepCarouselView: View {
                     .padding(10)
                     .background(Color.white.opacity(0.05))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .id(step.id)
                 }
             }
         }
+        .sheet(item: $selectedStep) { step in
+            ScreenshotDetailView(step: step, host: hostBaseURL)
+        }
+        .scrollIndicators(.hidden)
+        .onChange(of: steps.count) { if let last = steps.last { proxy.scrollTo(last.id, anchor: .trailing) } }
+        }
     }
 }
-

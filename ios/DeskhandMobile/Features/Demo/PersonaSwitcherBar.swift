@@ -2,41 +2,22 @@ import SwiftUI
 
 public struct PersonaSwitcherBar: View {
     @Binding var selectedPersona: TeamPersona
-
-    public init(selectedPersona: Binding<TeamPersona>) {
-        self._selectedPersona = selectedPersona
-    }
-
+    public init(selectedPersona: Binding<TeamPersona>) { _selectedPersona = selectedPersona }
     public var body: some View {
-        HStack(spacing: 8) {
-            ForEach(TeamPersona.demoPersonas) { persona in
-                let isSelected = persona.id == selectedPersona.id
-                Button {
-                    selectedPersona = persona
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(persona.emoji)
-                        Text(persona.name)
-                            .font(.caption.bold())
-                        Text("(\(persona.role.rawValue))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity)
-                    .background(isSelected ? Color.orange.opacity(0.25) : Color.white.opacity(0.05))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(isSelected ? Color.orange : Color.clear, lineWidth: 1.5)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+        ScrollView(.horizontal) {
+            HStack {
+                ForEach(TeamPersona.demoPersonas) { persona in
+                    Button { selectedPersona = persona } label: {
+                        VStack(spacing: 3) {
+                            Text("\(persona.emoji) \(persona.name)").bold()
+                            Text(persona.role.rawValue).font(.caption2)
+                        }.padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(selectedPersona.id == persona.id ? .orange.opacity(0.25) : .white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+                    }.buttonStyle(.plain)
+                        .accessibilityLabel("\(persona.name), \(persona.role.rawValue)")
+                        .accessibilityAddTraits(selectedPersona.id == persona.id ? .isSelected : [])
                 }
-                .buttonStyle(.plain)
             }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
+        }.scrollIndicators(.hidden).padding(.horizontal).padding(.vertical, 6)
     }
 }
-

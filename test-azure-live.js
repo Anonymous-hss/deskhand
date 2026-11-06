@@ -3,7 +3,7 @@ import { VisionPlanner } from './apps/agent-host/dist/vision/visionPlanner.js';
 
 async function testAzureOpenAILive() {
   console.log('--- 🧪 Testing Azure OpenAI Live Vision Call ---');
-  console.log(`Endpoint: ${process.env.AZURE_OPENAI_ENDPOINT}`);
+  console.log('Endpoint configured:', Boolean(process.env.AZURE_OPENAI_ENDPOINT));
   console.log(`Model:    ${process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4o'}`);
 
   const budget = new CallBudgetGuard();
@@ -11,8 +11,9 @@ async function testAzureOpenAILive() {
 
   process.env.VISION_MODE = 'live';
 
+  const callsBefore = budget.getStatus().usedCalls;
   const plan = await planner.planNextStep(
-    'update the masala chai price to 249 in the store admin and tell the team',
+    'Connectivity check only: return action type complete, riskLevel LOW, needsHumanTakeover false, and thought Azure connectivity verified. Do not navigate or perform any browser action.',
     0
   );
 
@@ -24,7 +25,7 @@ async function testAzureOpenAILive() {
   const status = budget.getStatus();
   console.log(`\n✓ Call Budget Guard Status: ${status.usedCalls}/${status.maxCalls} calls used (Breakdown: vision=${status.breakdown.vision})`);
 
-  if (status.usedCalls !== 1) {
+  if (status.usedCalls !== callsBefore + 1) {
     throw new Error('Expected 1 call consumed from budget.');
   }
 

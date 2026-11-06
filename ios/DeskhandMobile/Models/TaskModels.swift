@@ -13,7 +13,7 @@ public enum RiskLevel: String, Codable, Sendable {
     case high = "HIGH"
 }
 
-public enum TaskStatus: String, Codable, Sendable {
+public enum TaskStatus: String, Codable, Hashable, Sendable {
     case queued = "QUEUED"
     case running = "RUNNING"
     case awaitingApproval = "AWAITING_APPROVAL"
@@ -63,5 +63,6 @@ public struct DeskhandTask: Codable, Identifiable, Sendable {
     public var bugReport: BugReportDraft?
     public var summary: String?
     public var replayGifUrl: String?
+    public var voiceNoteUrl: String? = nil
 }
 

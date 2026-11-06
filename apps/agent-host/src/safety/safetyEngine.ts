@@ -37,12 +37,10 @@ export class SafetyEngine {
   }
 
   public isUrlAllowed(targetUrl: string): boolean {
-    if (process.env.ALLOW_ALL_DOMAINS === 'true' || this.config.allowedHosts.includes('*')) {
-      return true;
-    }
     try {
       const parsed = new URL(targetUrl);
-      return this.config.allowedHosts.includes(parsed.host);
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return false;
+      return process.env.ALLOW_ALL_DOMAINS === 'true' || this.config.allowedHosts.includes('*') || this.config.allowedHosts.includes(parsed.host);
     } catch {
       return false;
     }
@@ -53,13 +51,19 @@ export class SafetyEngine {
    * 1. Deterministic selector/thought inspection for submit/pay/delete/send
    * 2. Vision LLM's own riskLevel classification
    */
-  public requiresTeamApproval(plan: VisionPlanOutput): {
+  public requiresTeamApproval(plan: VisionPlanOutput, currentUrl?: string): {
     required: boolean;
     promptQuestion: string;
     diffSummary: string;
   } {
-    // Exclude safe internal tracking tasks (like filing a reproduction bug report) from the safety gate
-    if (plan.riskLevel === 'LOW' && plan.action.selectorHint?.includes('issue')) {
+    // Only the known local demo tracker has a pre-authorized low-risk submission.
+    let isDemoTracker = false;
+    try {
+      const current = new URL(currentUrl || '');
+      const demo = new URL(process.env.DEMO_APPS_URL || 'http://localhost:4000');
+      isDemoTracker = current.origin === demo.origin && current.pathname === '/issues';
+    } catch { /* No implicit exemption for unknown pages. */ }
+    if (plan.action.type === 'complete' || (isDemoTracker && plan.riskLevel === 'LOW' && plan.action.selectorHint === '#submit-issue-btn')) {
       return { required: false, promptQuestion: '', diffSummary: '' };
     }
 
@@ -71,7 +75,7 @@ export class SafetyEngine {
     const isHighRisk =
       plan.riskLevel === 'HIGH' ||
       plan.action.selectorHint === '#save-price-btn' ||
-      (plan.riskLevel !== 'LOW' && Boolean(matchedKeyword));
+      (['click', 'press'].includes(plan.action.type) && Boolean(matchedKeyword));
 
     if (!isHighRisk) {
       return { required: false, promptQuestion: '', diffSummary: '' };

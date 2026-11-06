@@ -210,3 +210,13 @@ deskhand/ios/DeskhandMobile/
 | **Phase 2: Cryptographic Hardware Approvals (Weeks 5–8)** | Secure Enclave & Passkey Signing | Sign high-risk approval decisions (`pay`, `wire transfer`, `production deploy`) using a Secure Enclave hardware key so the Windows Agent Host cryptographically verifies human approval before clicking submit. |
 | **Phase 3: iPadOS & VisionOS Multi-Agent Studio (Weeks 9–12)** | Fleet Supervision on Mobile | Multi-column iPadOS layout watching 4 concurrent Windows agent sandboxes simultaneously with instant drag-and-drop credential/OTP injection and full WebRTC 60fps low-latency screen takeover. |
 
+
+---
+
+## Implementation update — Nov 6, 2026
+
+See [implementation status and verification](docs/IOS_IMPLEMENTATION_STATUS.md) for completed hackathon features, test evidence, and remaining device/integration/production work. See [iOS run instructions](ios/DeskhandMobile/README.md) to launch the app.
+
+### Verified implementation status — 7 November 2026
+
+The Swift companion builds for iOS and is installed on the paired physical iPhone. Seven Swift tests cover host addresses, event restoration, draft failure handling, role restrictions and takeover coordinate mapping. Live pairing stores a host-scoped Keychain credential; host identity replaces demo persona claims. Approval has an expiring ID, observed price diff and a page-state digest. Physical Face ID approval, the real Slack workflows and their recordings still require end-to-end validation; simulator/unit tests do not prove those steps. On-device transcription is required for voice; unsupported raw-audio transcription fails explicitly. The host currently runs on this Mac. Native Windows packaging and Windows hardware validation are not complete.

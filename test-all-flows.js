@@ -1,220 +1,50 @@
+// Isolated real Chromium workflow checks; deterministic planner, zero paid calls.
+import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-async function postJson(url, data) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  });
-  return res.json();
+import http from 'node:http';
+const root = path.dirname(new URL(import.meta.url).pathname);
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'deskhand-flows-'));
+const children = [];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function port() { const s = http.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
+const hostPort = await port(), demoPort = await port();
+const base = `http://127.0.0.1:${hostPort}`;
+let credentials;
+async function request(route, body, kind = 'bridge', expected = 200) {
+  const token = credentials?.find(x => x.kind === kind)?.token;
+  const r = await fetch(base + route, {method: body === undefined ? 'GET' : 'POST', headers: {'Content-Type':'application/json', ...(token ? {Authorization:`Bearer ${token}`} : {})}, ...(body === undefined ? {} : {body:JSON.stringify(body)})});
+  const data = await r.json(); assert.equal(r.status, expected, JSON.stringify(data)); return data;
 }
-
-async function getJson(url) {
-  const res = await fetch(url);
-  return res.json();
+async function wait(task, target = 'COMPLETED') {
+  for (let i = 0; i < 180; i++) { const t = await request(`/api/tasks/${task.taskId}`); if (t.status === target) return t; if (['FAILED','REJECTED','HALTED_BY_BUDGET'].includes(t.status)) throw new Error(JSON.stringify(t)); await sleep(200); }
+  throw new Error(`Timeout awaiting ${target}`);
 }
-
-async function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function start(prompt, extra = {}) { return request('/api/tasks', {prompt, roomId:'test-room', threadId:'test-thread', source:'switch_chat', senderName:'Test requester', ...extra}, 'bridge', 201); }
+try {
+  const env = {...process.env, VISION_MODE:'mock', DEMO_PORT:String(demoPort), PORT:String(hostPort), DEMO_APPS_URL:`http://127.0.0.1:${demoPort}`, DESKHAND_STATE_DIR:directory, CALL_BUDGET_FILE:path.join(directory,'budget.json'), SWITCH_TRANSPORT:'console_managed', ALLOW_ALL_DOMAINS:'true', GENERALIZED_AGENT:'false'};
+  for (const file of ['apps/chai-co-demos/dist/server.js','apps/agent-host/dist/index.js']) children.push(spawn(process.execPath,[file],{cwd:root,env,stdio:'ignore'}));
+  for(let i=0;i<80;i++){try{if((await fetch(base+'/api/status')).ok)break;}catch{} await sleep(100);}
+  credentials = JSON.parse(fs.readFileSync(path.join(directory,'client-credentials.json'),'utf8'));
+  await request('/api/tasks',{prompt:'unauthenticated'},'none',401);
+  const report = await wait(await start('Reproduce checkout failure with coupon CHAI50'));
+  assert.ok(report.observedErrors?.length); assert.ok(report.bugReport?.title.includes('500'));
+  const filed = await wait(await start('file it in the issue tracker',{parentTaskId:report.taskId}));
+  assert.equal(filed.verification?.kind,'issue_created');
+  assert.equal((await fetch(filed.bugReport.filedUrl)).status,200);
+  const price = await wait(await start('Update the masala chai price to 249 in the store admin'), 'AWAITING_APPROVAL');
+  assert.equal(price.pendingApproval.observedDiff.after,'₹249');
+  const route = `/api/tasks/${price.taskId}/approval`;
+  await request(route,{decision:'approve',approvalId:price.pendingApproval.approvalId,responderRole:'admin'},'bridge',403);
+  await request(route,{decision:'approve',approvalId:'stale'},'operator',409);
+  await request(route,{decision:'approve',approvalId:price.pendingApproval.approvalId},'operator');
+  const saved = await wait(price); assert.equal(saved.verification?.kind,'price_saved'); assert.equal(saved.verification.observedValue,'₹249');
+  const status = await request('/api/status'); assert.equal(status.budget.usedCalls,0);
+  console.log('PASS: actual checkout error → report → verified issue URL; price pause → bridge/stale approval rejection → authenticated approval → verified saved price. Real Chromium, mock planner, zero paid calls.');
+} finally {
+  for(const child of children) child.kill('SIGINT');
+  await Promise.all(children.map(child=>child.exitCode === null ? new Promise(r=>child.once('exit',r)) : undefined));
+  fs.rmSync(directory,{recursive:true,force:true});
 }
-
-let spawnedProcesses = [];
-
-async function ensureServersRunning() {
-  try {
-    await getJson('http://localhost:4100/api/status');
-    return; // Already running
-  } catch {
-    console.log('[Test Runner] Starting background demo servers for automated test run...');
-    const demo = spawn('node', ['--env-file=.env', 'apps/chai-co-demos/dist/server.js'], { cwd: __dirname, stdio: 'ignore' });
-    const host = spawn('node', ['--env-file=.env', 'apps/agent-host/dist/index.js'], { cwd: __dirname, stdio: 'ignore' });
-    spawnedProcesses = [demo, host];
-    for (let i = 0; i < 30; i++) {
-      await sleep(300);
-      try {
-        await getJson('http://localhost:4100/api/status');
-        console.log('[Test Runner] Background servers ready.');
-        return;
-      } catch {
-        // waiting
-      }
-    }
-    throw new Error('Timed out waiting for test servers to start on ports 4000 & 4100.');
-  }
-}
-
-async function runTests() {
-  await ensureServersRunning();
-  console.log('--- 🧪 Starting Deskhand Full Flow Verification ---');
-
-  // Verify servers are up
-  const status = await getJson('http://localhost:4100/api/status');
-  console.log('✓ Agent Host status: Active. Budget: ' + status.budget.usedCalls + '/' + status.budget.maxCalls);
-
-  // Scene 1: QA Bug Reproduction
-  console.log('\n--- 1️⃣ Testing Scene 1: QA Bug Repro on /shop ---');
-  const task1 = await postJson('http://localhost:4100/api/tasks', {
-    prompt: 'checkout fails on staging when coupon is applied, can you reproduce?',
-    senderName: 'Priya',
-    senderRole: 'qa-lead',
-    source: 'ios_text'
-  });
-  console.log(`Task 1 started: ${task1.taskId}`);
-
-  // Wait for task 1 to finish
-  let t1Status = task1;
-  for (let i = 0; i < 40; i++) {
-    await sleep(500);
-    const hostStatus = await getJson('http://localhost:4100/api/status');
-    if (hostStatus.activeTask?.taskId === task1.taskId && hostStatus.activeTask?.status === 'COMPLETED') {
-      t1Status = hostStatus.activeTask;
-      break;
-    }
-  }
-  if (t1Status.status !== 'COMPLETED') {
-    throw new Error(`Task 1 timed out before reaching COMPLETED status. Current status: ${t1Status.status}`);
-  }
-  console.log(`✓ Task 1 finished with status: ${t1Status.status}`);
-  console.log(`✓ Steps completed: ${t1Status.steps?.length || 0}`);
-  if (t1Status.bugReport) {
-    console.log(`✓ Bug report generated: "${t1Status.bugReport.title}"`);
-  }
-
-  // Scene 1B: File the bug in issue tracker
-  console.log('\n--- 1️⃣B Testing Scene 1B: Filing Bug Report in Tracker ---');
-  const task1b = await postJson('http://localhost:4100/api/tasks', {
-    prompt: 'file it in the issue tracker',
-    senderName: 'Rahul',
-    senderRole: 'admin',
-    source: 'ios_text'
-  });
-  console.log(`Task 1B started: ${task1b.taskId}`);
-  for (let i = 0; i < 40; i++) {
-    await sleep(500);
-    const hostStatus = await getJson('http://localhost:4100/api/status');
-    if (hostStatus.activeTask?.taskId === task1b.taskId && hostStatus.activeTask?.status === 'COMPLETED') {
-      console.log('✓ Task 1B completed: Issue filed in Chai Co. Tracker!');
-      break;
-    }
-  }
-
-  // Scene 2: Price Update with Safety Switch Approval Gate
-  console.log('\n--- 2️⃣ Testing Scene 2: Price Update + Safety Switch Approval ---');
-  const task2 = await postJson('http://localhost:4100/api/tasks', {
-    prompt: 'update the masala chai price to 249 in the store admin and tell the team',
-    senderName: 'Arjun',
-    senderRole: 'ops-member',
-    source: 'ios_voice'
-  });
-  console.log(`Task 2 started: ${task2.taskId}`);
-
-  // Poll until it reaches AWAITING_APPROVAL
-  let hitApproval = false;
-  for (let i = 0; i < 20; i++) {
-    await sleep(500);
-    const hostStatus = await getJson('http://localhost:4100/api/status');
-    if (hostStatus.activeTask?.taskId === task2.taskId && hostStatus.activeTask?.status === 'AWAITING_APPROVAL') {
-      hitApproval = true;
-      console.log('🛑 Safety Switch Triggered! Prompt: ' + hostStatus.activeTask.pendingApproval?.promptQuestion);
-      break;
-    }
-  }
-
-  if (!hitApproval) {
-    console.error('❌ Failed to reach AWAITING_APPROVAL state.');
-    const hostStatus = await getJson('http://localhost:4100/api/status');
-    console.error('Current activeTask:', hostStatus.activeTask);
-    return;
-  }
-
-  // Test unauthorized role rejection (e.g. Arjun as ops-member cannot approve)
-  const unauthRes = await postJson(`http://localhost:4100/api/tasks/${task2.taskId}/approval`, {
-    decision: 'approve',
-    responderName: 'Arjun',
-    responderRole: 'ops-member'
-  });
-  console.log(`✓ Verified RBAC: Unauthorized role cannot approve: "${unauthRes.error}"`);
-
-  // Now approve as Priya (qa-lead)
-  const authRes = await postJson(`http://localhost:4100/api/tasks/${task2.taskId}/approval`, {
-    decision: 'approve',
-    responderName: 'Priya',
-    responderRole: 'qa-lead'
-  });
-  console.log(`✓ Approved by Priya (qa-lead): ${authRes.ok ? 'SUCCESS' : 'FAILED'}`);
-
-  // Wait for task 2 completion
-  for (let i = 0; i < 20; i++) {
-    await sleep(500);
-    const hostStatus = await getJson('http://localhost:4100/api/status');
-    if (hostStatus.activeTask?.taskId === task2.taskId && hostStatus.activeTask?.status === 'COMPLETED') {
-      console.log('✓ Task 2 completed: Price updated to ₹249 in Store Admin!');
-      break;
-    }
-  }
-
-  // Scene 3: 2FA Login Code Challenge & Takeover
-  console.log('\n--- 3️⃣ Testing Scene 3: 2FA Login Code Challenge & Takeover ---');
-  const task3 = await postJson('http://localhost:4100/api/tasks', {
-    prompt: 'open admin with 2fa login code',
-    senderName: 'Rahul',
-    senderRole: 'admin',
-    source: 'ios_text'
-  });
-  console.log(`Task 3 started: ${task3.taskId}`);
-
-  // Poll until it reaches HUMAN_TAKEOVER
-  let hitTakeover = false;
-  for (let i = 0; i < 20; i++) {
-    await sleep(500);
-    const hostStatus = await getJson('http://localhost:4100/api/status');
-    if (hostStatus.activeTask?.taskId === task3.taskId && hostStatus.activeTask?.status === 'HUMAN_TAKEOVER') {
-      hitTakeover = true;
-      console.log('🖐️ Takeover Requested! Reason: ' + hostStatus.activeTask.takeover?.reason);
-      break;
-    }
-  }
-
-  if (!hitTakeover) {
-    console.error('❌ Failed to reach HUMAN_TAKEOVER state.');
-    const hostStatus = await getJson('http://localhost:4100/api/status');
-    console.error('Current activeTask:', hostStatus.activeTask);
-    return;
-  }
-
-  // Simulate human teammate Rahul typing 2FA code into takeover endpoint
-  const takeoverRes = await postJson(`http://localhost:4100/api/tasks/${task3.taskId}/takeover`, {
-    taskId: task3.taskId,
-    type: 'otp_submit',
-    text: '482910',
-    actorName: 'Rahul'
-  });
-  console.log(`✓ 2FA Code 482910 injected by Rahul: ${takeoverRes.ok ? 'SUCCESS' : 'FAILED'}`);
-
-  // Wait for task 3 completion
-  for (let i = 0; i < 20; i++) {
-    await sleep(500);
-    const hostStatus = await getJson('http://localhost:4100/api/status');
-    if (hostStatus.activeTask?.taskId === task3.taskId && hostStatus.activeTask?.status === 'COMPLETED') {
-      console.log('✓ Task 3 completed: Admin unlocked and control handed back!');
-      break;
-    }
-  }
-
-  console.log('\n🎉 ALL 3 DEMO SCENES VERIFIED SUCCESSFULLY!');
-  for (const proc of spawnedProcesses) {
-    try { proc.kill('SIGINT'); } catch { }
-  }
-}
-
-runTests().catch((err) => {
-  console.error(err);
-  for (const proc of spawnedProcesses) {
-    try { proc.kill('SIGINT'); } catch { }
-  }
-  process.exit(1);
-});

@@ -1,4 +1,8 @@
 import fs from 'node:fs';
+import { TaskRepository } from '../state/taskRepository.js';
+import { reportFromEvidence, evidencePacket } from '../evidence/bugReport.js';
+import { OperatorAuth } from '../auth/operatorAuth.js';
+import crypto from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
@@ -39,10 +43,30 @@ export class DeskhandGatewayServer {
   private recentTasks: DeskhandTask[] = [];
   private approvalResolvers = new Map<string, (decision: 'approve' | 'reject', actor: string) => void>();
   private takeoverResolvers = new Map<string, () => void>();
+  private repository: TaskRepository;
+  private auth: OperatorAuth;
+  private lastAgentContactAt: string | null = null;
+  private taskController: AbortController | null = null;
   private wsClients = new Set<WebSocket>();
+  private lastTakeoverFrame: Extract<GatewayWsMessage, { event: 'takeover:frame' }> | null = null;
 
-  constructor(port = 4100) {
+  private isCurrentTask(task: DeskhandTask): boolean {
+    return this.activeTask === task && !['FAILED', 'REJECTED', 'HALTED_BY_BUDGET'].includes(task.status);
+  }
+
+
+  constructor(port = 4100, storageDirectory?: string) {
+    this.repository = new TaskRepository(storageDirectory ? path.join(storageDirectory, 'tasks') : undefined);
+    this.auth = new OperatorAuth(storageDirectory);
     this.port = port;
+    this.recentTasks = this.repository.recent();
+    for (const task of this.recentTasks) {
+      if (['RUNNING', 'QUEUED', 'AWAITING_APPROVAL', 'HUMAN_TAKEOVER'].includes(task.status)) {
+        task.status = 'FAILED'; task.summary = 'Host restarted. The interrupted task was not resumed automatically.';
+        if (task.pendingApproval?.status === 'PENDING') task.pendingApproval.status = 'REJECTED';
+        this.repository.save(task);
+      }
+    }
     this.budget = new CallBudgetGuard();
     this.safety = new SafetyEngine();
     this.browser = new BrowserRuntime(this.safety);
@@ -57,23 +81,13 @@ export class DeskhandGatewayServer {
     this.switchClient.onAddressedMessage((evt) => {
       // Check if this incoming message is answering a pending Safety Switch approval
       if (this.activeTask?.status === 'AWAITING_APPROVAL' && this.activeTask.pendingApproval) {
-        const lower = evt.text.toLowerCase();
-        if (lower.includes('approve') || evt.text.startsWith('approve:')) {
-          this.resolveApproval(
-            this.activeTask.taskId,
-            'approve',
-            evt.senderName,
-            (evt.senderRole as TeamRole) || 'qa-lead'
-          );
-          return;
-        }
-        if (lower.includes('not now') || lower.includes('reject') || evt.text.startsWith('reject:')) {
-          this.resolveApproval(
-            this.activeTask.taskId,
-            'reject',
-            evt.senderName,
-            (evt.senderRole as TeamRole) || 'qa-lead'
-          );
+        const command = evt.text.trim().replace(/^@deskhand\s+/i, '').trim();
+        const match = /^(approve|reject|not now)(?::(task-[a-zA-Z0-9-]+))?[.!]?$/i.exec(command);
+        if (match) {
+          if (match[2] && match[2] !== this.activeTask.taskId) return;
+          if (evt.roomId !== this.activeTask.roomId) return;
+          this.resolveApproval(this.activeTask.taskId, match[1].toLowerCase() === 'approve' ? 'approve' : 'reject',
+            evt.senderName, (evt.senderRole as TeamRole) || 'viewer');
           return;
         }
       }
@@ -81,15 +95,25 @@ export class DeskhandGatewayServer {
       void this.startTask({
         prompt: evt.text,
         senderName: evt.senderName,
-        senderRole: (evt.senderRole as TeamRole) || 'qa-lead',
+        senderRole: (evt.senderRole as TeamRole) || 'viewer',
         source: 'switch_chat',
         roomId: evt.roomId
-      });
+      }).catch((error) => console.warn('[Switch task]', (error as Error).message));
     });
+  }
+
+  private async postRoomMessage(params: Parameters<SwitchConnector['postRoomMessage']>[0]): Promise<void> {
+    if (process.env.SWITCH_TRANSPORT === 'direct_legacy') await this.switchClient.postRoomMessage(params);
   }
 
   public getStatusPayload(): HostStatusPayload {
     return {
+      coordination: {
+        mode: process.env.SWITCH_TRANSPORT === 'direct_legacy' ? 'direct_legacy' : 'console_managed',
+        hostLinkRequired: process.env.SWITCH_TRANSPORT === 'direct_legacy',
+        lastAgentContactAt: this.lastAgentContactAt,
+        description: process.env.SWITCH_TRANSPORT === 'direct_legacy' ? 'Legacy connector; not verified with current Switch.' : 'Slack → Switch Console-managed agent → authenticated browser host. Host does not claim a direct Switch session.'
+      },
       switchConnected: this.switchClient.isConnected(),
       switchMode: this.switchClient.getMode(),
       lastHeartbeatAt: this.switchClient.getLastHeartbeatAt(),
@@ -102,10 +126,15 @@ export class DeskhandGatewayServer {
   }
 
   private broadcast(msg: GatewayWsMessage): void {
+    if (msg.event.startsWith('task:')) {
+      const data = msg.data as DeskhandTask | { task: DeskhandTask };
+      const task = 'task' in data ? data.task : data as DeskhandTask;
+      task.updatedAt = new Date().toISOString(); this.repository.save(task);
+    }
     const payload = JSON.stringify(msg);
     for (const client of this.wsClients) {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(payload);
+        if (msg.event !== 'takeover:frame' || client.bufferedAmount < 1024 * 1024) client.send(payload);
       }
     }
   }
@@ -116,12 +145,28 @@ export class DeskhandGatewayServer {
     senderRole: TeamRole;
     source: TaskSource;
     roomId?: string;
+    audioBase64?: string;
+    threadId?: string;
+    requestId?: string;
+    parentTaskId?: string;
   }): Promise<DeskhandTask> {
-    const taskId = `task-${Date.now().toString(36)}`;
+    if (params.requestId) {
+      const existing = this.repository.recent().find(task => task.requestId === params.requestId && task.roomId === params.roomId);
+      if (existing) return existing;
+    }
+    if (this.activeTask && ['RUNNING', 'QUEUED', 'AWAITING_APPROVAL', 'HUMAN_TAKEOVER'].includes(this.activeTask.status)) {
+      throw new Error('A task is already running. Finish or stop it before starting another.');
+    }
+    const filing = /^file(?: it| the bug| the report)?(?: in (?:the )?issue tracker)?[.!]?$/i.test(params.prompt.trim());
+    const parent = params.parentTaskId ? this.repository.get(params.parentTaskId) : filing ? this.repository.resolveParent(params.roomId || 'ops', params.threadId) : undefined;
+    if (filing && (!parent?.bugReport || parent.roomId !== (params.roomId || 'ops') || parent.threadId !== params.threadId)) {
+      throw new Error('No observed bug report exists in this conversation. Reproduce the issue first or supply the matching source task.');
+    }
+    const taskId = `task-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const task: DeskhandTask = {
       taskId,
-      roomId: params.roomId || 'ops',
+      roomId: params.roomId || process.env.SWITCH_ROOM_ID || 'ops',
       prompt: params.prompt,
       senderName: params.senderName,
       senderRole: params.senderRole,
@@ -130,16 +175,32 @@ export class DeskhandGatewayServer {
       createdAt: now,
       updatedAt: now,
       steps: [],
-      callsUsed: 0
+      callsUsed: 0,
+      threadId: params.threadId,
+      requestId: params.requestId,
+      parentTaskId: parent?.taskId,
+      intent: filing ? 'file_issue' : undefined,
+      bugReport: filing ? parent?.bugReport : undefined,
+      observedErrors: [],
+      evidenceUrl: `/api/tasks/${taskId}/evidence`
     };
 
+    if (params.audioBase64) {
+      const bytes = Buffer.from(params.audioBase64, 'base64');
+      if (bytes.length > 5 * 1024 * 1024) throw new Error('Voice note exceeds the 5 MB limit');
+      fs.mkdirSync(CAPTURES_DIR, { recursive: true });
+      fs.writeFileSync(path.join(CAPTURES_DIR, `${taskId}-voice.m4a`), bytes);
+      task.voiceNoteUrl = `/captures/${taskId}-voice.m4a`;
+    }
+    this.taskController = new AbortController();
     this.activeTask = task;
     this.recentTasks.unshift(task);
     this.broadcast({ event: 'task:started', data: task });
 
-    await this.switchClient.postRoomMessage({
+    await this.postRoomMessage({
       roomId: task.roomId,
-      text: `🤖 *Deskhand* picked up task from *${task.senderName}*: "${task.prompt}"`
+      text: `🤖 *Deskhand* picked up task from *${task.senderName}*: "${task.prompt}"`,
+      mediaUrl: task.voiceNoteUrl
     });
 
     void this.runTaskLoop(task);
@@ -148,23 +209,31 @@ export class DeskhandGatewayServer {
 
   private async runTaskLoop(task: DeskhandTask): Promise<void> {
     try {
-      for (let stepIndex = 0; stepIndex < 10; stepIndex++) {
-        console.log(`[DEBUG runTaskLoop] Loop start step ${stepIndex}`);
-        if (this.activeTask?.taskId !== task.taskId) return;
+      const defaultMaxSteps = process.env.GENERALIZED_AGENT === 'true' ? 30 : 10;
+      const configuredSteps = Number(process.env.MAX_TASK_STEPS || defaultMaxSteps);
+      const maxSteps = Number.isInteger(configuredSteps) ? Math.min(Math.max(configuredSteps, 1), 30) : defaultMaxSteps;
+      const callsAtStart = this.budget.getStatus().usedCalls;
+      for (let stepIndex = 0; stepIndex < maxSteps; stepIndex++) {
+        if (!this.isCurrentTask(task)) return;
 
-        console.log(`[DEBUG runTaskLoop] Getting pageSnapshot...`);
         const pageSnapshot = await this.browser.getPageSnapshot();
-        console.log(`[DEBUG runTaskLoop] PageSnapshot: ${pageSnapshot.url}`);
+        if (!this.isCurrentTask(task)) return;
 
-        console.log(`[DEBUG runTaskLoop] Calling planner.planNextStep...`);
+
         const plan = await this.planner.planNextStep(
-          task.prompt,
+          task.intent === 'file_issue' ? `${task.prompt}. File the observed report below in ${process.env.DEMO_APPS_URL || 'http://localhost:4000'}/issues. Use exactly this observed title and reproduction steps. Verify the created issue in the page before completing. Report: ${JSON.stringify(task.bugReport)}` : task.prompt,
           stepIndex,
           task.steps[task.steps.length - 1]?.screenshotUrl,
           pageSnapshot,
-          task.steps
+          task.steps,
+          this.taskController?.signal,
+          task.bugReport
         );
-        console.log(`[DEBUG runTaskLoop] Received plan action: ${plan.action.type} thought: ${plan.thought}`);
+
+
+        if (!this.isCurrentTask(task)) return;
+        task.callsUsed = this.budget.getStatus().usedCalls - callsAtStart;
+        this.broadcast({ event: 'host:status', data: this.getStatusPayload() });
 
         // Check if Human Takeover is needed (e.g. 2FA Login Code screen)
         if (plan.needsHumanTakeover) {
@@ -186,14 +255,22 @@ export class DeskhandGatewayServer {
             data: { taskId: task.taskId, takeover, task }
           });
 
-          await this.switchClient.postRoomMessage({
+          const released = new Promise<void>((resolve) => this.takeoverResolvers.set(task.taskId, resolve));
+          await this.postRoomMessage({
             roomId: task.roomId,
             text: `🖐️ *Take Over Needed:* ${takeover.reason}\n👉 Tap to take over screen: ${takeover.takeoverUrl}`
           });
 
-          await new Promise<void>((resolve) => {
-            this.takeoverResolvers.set(task.taskId, resolve);
+          if (!this.isCurrentTask(task)) return;
+          await this.browser.startScreencast((jpegBase64) => {
+            if (!this.isCurrentTask(task) || task.status !== 'HUMAN_TAKEOVER') return;
+            this.lastTakeoverFrame = { event: 'takeover:frame', data: { taskId: task.taskId, jpegBase64, ...this.browser.viewport } };
+            this.broadcast(this.lastTakeoverFrame);
           });
+          await released;
+          await this.browser.stopScreencast();
+          this.lastTakeoverFrame = null;
+          if (!this.isCurrentTask(task)) return;
 
           takeover.active = false;
           task.status = 'RUNNING';
@@ -205,16 +282,18 @@ export class DeskhandGatewayServer {
         }
 
         // Check Safety Switch before executing risky actions (submit/pay/delete/send)
-        const safetyCheck = this.safety.requiresTeamApproval(plan);
+        const safetyCheck = this.safety.requiresTeamApproval(plan, this.browser.getCurrentUrl());
         if (safetyCheck.required) {
           const preScreenshotUrl = await this.browser.captureStepScreenshot(
-            task.taskId,
+            `${task.taskId}-approval`,
             stepIndex + 1,
             `PAUSED FOR APPROVAL: ${safetyCheck.promptQuestion}`
           );
 
+          if (!this.isCurrentTask(task)) return;
+          const context = await this.browser.approvalContext();
           const approval: ApprovalRequest = {
-            approvalId: `appr-${Date.now().toString(36)}`,
+            approvalId: `appr-${crypto.randomUUID()}`,
             taskId: task.taskId,
             stepNumber: stepIndex + 1,
             promptQuestion: safetyCheck.promptQuestion,
@@ -223,7 +302,10 @@ export class DeskhandGatewayServer {
             screenshotUrl: preScreenshotUrl,
             allowedRoles: this.safety.getApproverRoles(),
             createdAt: new Date().toISOString(),
-            status: 'PENDING'
+            status: 'PENDING',
+            expiresAt: new Date(Date.now() + 300000).toISOString(),
+            actionDigest: context.digest,
+            observedDiff: context.price
           };
 
           task.status = 'AWAITING_APPROVAL';
@@ -235,7 +317,10 @@ export class DeskhandGatewayServer {
             data: { taskId: task.taskId, approval, task }
           });
 
-          await this.switchClient.postRoomMessage({
+          const decisionPromise = new Promise<{ decision: 'approve' | 'reject'; actor: string }>((resolve) => {
+            this.approvalResolvers.set(task.taskId, (decision, actor) => resolve({ decision, actor }));
+          });
+          await this.postRoomMessage({
             roomId: task.roomId,
             text: `🛑 *Safety Switch — Approval Required:* ${approval.promptQuestion}`,
             mediaUrl: preScreenshotUrl,
@@ -245,14 +330,11 @@ export class DeskhandGatewayServer {
             ]
           });
 
-          const decision = await new Promise<{ decision: 'approve' | 'reject'; actor: string }>(
-            (resolve) => {
-              this.approvalResolvers.set(task.taskId, (dec, actor) =>
-                resolve({ decision: dec, actor })
-              );
-            }
-          );
+          const expiryTimer = setTimeout(() => this.resolveApproval(task.taskId, 'reject', 'Approval expired', 'admin'), Math.max(1, Date.parse(approval.expiresAt!) - Date.now()));
+          let decision: { decision: 'approve' | 'reject'; actor: string };
+          try { decision = await decisionPromise; } finally { clearTimeout(expiryTimer); }
 
+          if (!this.isCurrentTask(task)) return;
           approval.status = decision.decision === 'approve' ? 'APPROVED' : 'REJECTED';
           approval.resolvedBy = decision.actor;
           approval.resolvedAt = new Date().toISOString();
@@ -264,38 +346,46 @@ export class DeskhandGatewayServer {
 
           if (decision.decision === 'reject') {
             task.status = 'REJECTED';
-            task.summary = `Paused and cancelled by ${decision.actor} ("Not now"). No changes were saved.`;
+            task.summary = `Cancelled by ${decision.actor}. The pending action was not executed.`;
+            if (approval.observedDiff) {
+              const unchanged = await this.browser.verifyPrice(approval.observedDiff.before);
+              if (unchanged) {
+                task.verification = { kind: 'price_unchanged', verifiedAt: new Date().toISOString(), pageUrl: unchanged.url, expectedValue: approval.observedDiff.before, observedValue: unchanged.value };
+                task.summary += ` Verified saved price remains ${unchanged.value}.`;
+              }
+            }
             this.broadcast({ event: 'task:completed', data: task });
             return;
           }
 
+          const current = await this.browser.approvalContext();
+          if (current.digest !== approval.actionDigest) throw new Error('The page or form changed after the approval preview. No save was performed; request a new approval.');
           task.status = 'RUNNING';
         }
 
         if (plan.action.type === 'complete') {
           task.status = 'COMPLETED';
           task.replayGifUrl = this.replay.generateReplayArtifact(task.taskId, task.steps);
-          task.summary = plan.thought;
-          if (task.prompt.toLowerCase().includes('coupon') || task.prompt.toLowerCase().includes('reproduce')) {
-            task.bugReport = {
-              title: '500 CouponDiscountOverflowException on checkout with coupon CHAI50',
-              severity: 'CRITICAL',
-              stepsToReproduce: [
-                'Open Chai Co. Staging Shop (/shop)',
-                'Add Masala Chai Tin (250g) to cart',
-                'Apply promo code CHAI50',
-                'Click Proceed to Checkout -> 500 Internal Server Error'
-              ],
-              errorBanner:
-                "CouponDiscountOverflowException: Negative tax bucket when applying coupon 'CHAI50' (CheckoutController.ts:142)",
-              screenshotUrl: task.steps[task.steps.length - 1]?.screenshotUrl || ''
-            };
+          task.summary = plan.result || plan.thought;
+          if (task.intent === 'file_issue') {
+            const created = await this.browser.verifyIssue(task.bugReport!.title);
+            if (!created) throw new Error('The issue tracker did not show a matching created issue. Filing is not verified.');
+            task.bugReport = { ...task.bugReport!, issueId: created.issueId, filedUrl: created.url };
+            task.verification = { kind: 'issue_created', verifiedAt: new Date().toISOString(), pageUrl: created.url, observedValue: created.issueId };
+            task.summary = `Verified issue ${created.issueId}: ${created.url}`;
+          } else task.bugReport = reportFromEvidence(task);
+          const approvedPrice = task.pendingApproval?.status === 'APPROVED' ? task.pendingApproval.observedDiff : undefined;
+          if (approvedPrice) {
+            const verified = await this.browser.verifyPrice(approvedPrice.after);
+            if (!verified) throw new Error('The saved price could not be verified on the page. Do not treat the update as complete.');
+            task.verification = { kind: 'price_saved', verifiedAt: new Date().toISOString(), pageUrl: verified.url, expectedValue: approvedPrice.after, observedValue: verified.value };
+            task.summary = `Verified saved ${approvedPrice.field}: ${approvedPrice.before} → ${verified.value}.`;
           }
           task.updatedAt = new Date().toISOString();
           this.broadcast({ event: 'task:completed', data: task });
           this.broadcast({ event: 'host:status', data: this.getStatusPayload() });
 
-          await this.switchClient.postRoomMessage({
+          await this.postRoomMessage({
             roomId: task.roomId,
             text: `✅ *Completed:* ${task.summary}`,
             mediaUrl: task.replayGifUrl
@@ -303,16 +393,17 @@ export class DeskhandGatewayServer {
           return;
         }
 
-        console.log(`[DEBUG runTaskLoop] Executing action: ${plan.action.type}...`);
+        if (!this.isCurrentTask(task)) return;
         await this.browser.executeAction(plan.action);
-        console.log(`[DEBUG runTaskLoop] Action executed. Capturing screenshot...`);
+        if (!this.isCurrentTask(task)) return;
         const screenshotUrl = await this.browser.captureStepScreenshot(
           task.taskId,
           stepIndex + 1,
           plan.thought
         );
-        console.log(`[DEBUG runTaskLoop] Screenshot captured: ${screenshotUrl}`);
 
+
+        if (!this.isCurrentTask(task)) return;
         const step: TaskStep = {
           stepNumber: stepIndex + 1,
           timestamp: new Date().toISOString(),
@@ -324,6 +415,12 @@ export class DeskhandGatewayServer {
         };
 
         task.steps.push(step);
+        const observed = await this.browser.getPageSnapshot();
+        for (const errorText of observed.observedErrors || []) {
+          if (!task.observedErrors!.some(error => error.errorText === errorText && error.pageUrl === observed.url)) {
+            task.observedErrors!.push({ stepNumber: step.stepNumber, timestamp: step.timestamp, pageUrl: observed.url, screenshotUrl, errorText });
+          }
+        }
         task.updatedAt = new Date().toISOString();
 
         this.broadcast({
@@ -331,14 +428,19 @@ export class DeskhandGatewayServer {
           data: { taskId: task.taskId, step, task }
         });
 
-        await this.switchClient.postRoomMessage({
+        await this.postRoomMessage({
           roomId: task.roomId,
           text: `📸 *Step ${step.stepNumber}:* ${step.thought}`,
           mediaUrl: step.screenshotUrl
         });
       }
+      if (this.isCurrentTask(task)) throw new Error('Task reached the step limit before completion. Review the last screenshot and retry with a narrower goal.');
     } catch (err) {
-      console.error('[runTaskLoop error]', err);
+      await this.browser.stopScreencast();
+      this.lastTakeoverFrame = null;
+      this.approvalResolvers.delete(task.taskId);
+      this.takeoverResolvers.delete(task.taskId);
+      if (!this.isCurrentTask(task)) return;
       const msg = (err as Error).message;
       task.status = msg.includes('CallBudgetGuard') ? 'HALTED_BY_BUDGET' : 'FAILED';
       task.summary = msg;
@@ -353,12 +455,15 @@ export class DeskhandGatewayServer {
     responderName: string,
     responderRole: TeamRole
   ): { ok: boolean; error?: string } {
+    if (!['approve', 'reject'].includes(decision)) return { ok: false, error: 'Invalid approval decision' };
     if (!this.safety.canRoleApprove(responderRole)) {
       return {
         ok: false,
         error: `Role "${responderRole}" is not authorized to approve high-risk steps. Allowed roles: ${this.safety.getApproverRoles().join(', ')}`
       };
     }
+    const pending = this.activeTask?.taskId === taskId ? this.activeTask.pendingApproval : undefined;
+    if (decision === 'approve' && pending?.expiresAt && Date.parse(pending.expiresAt) <= Date.now()) return { ok: false, error: 'This approval has expired. No action was executed.' };
     const resolver = this.approvalResolvers.get(taskId);
     if (!resolver) {
       return { ok: false, error: 'No pending approval for this taskId' };
@@ -369,6 +474,14 @@ export class DeskhandGatewayServer {
   }
 
   public async handleTakeoverInput(input: RemoteTakeoverInput): Promise<void> {
+    if (!this.activeTask || this.activeTask.taskId !== input.taskId || this.activeTask.status !== 'HUMAN_TAKEOVER') {
+      throw new Error('This task is not awaiting human takeover.');
+    }
+    if (!['tap', 'type', 'otp_submit', 'hand_back'].includes(input.type)) throw new Error('Invalid takeover input');
+    if (input.type === 'tap' && (!Number.isFinite(input.x) || !Number.isFinite(input.y) ||
+        input.x! < 0 || input.y! < 0 || input.x! >= 1280 || input.y! >= 800)) throw new Error('Invalid browser coordinates');
+    if (input.type === 'otp_submit' && !/^\d{6}$/.test(input.text || '')) throw new Error('Enter a six-digit code');
+    if (input.type === 'type' && (!input.text || input.text.length > 4096)) throw new Error('Invalid remote text');
     if (input.type === 'hand_back') {
       const resolver = this.takeoverResolvers.get(input.taskId);
       if (resolver) {
@@ -388,27 +501,71 @@ export class DeskhandGatewayServer {
     }
   }
 
+  public async emergencyStop(): Promise<void> {
+        this.taskController?.abort(); this.taskController = null;
+        if (this.activeTask) {
+          this.activeTask.status = 'FAILED';
+          this.activeTask.summary = 'Emergency Kill Switch triggered by operator.';
+          this.broadcast({ event: 'task:completed', data: this.activeTask });
+          const stopped = this.activeTask;
+          this.activeTask = null;
+          this.approvalResolvers.get(stopped.taskId)?.('reject', 'Emergency stop');
+          this.approvalResolvers.delete(stopped.taskId);
+          this.takeoverResolvers.get(stopped.taskId)?.();
+          this.takeoverResolvers.delete(stopped.taskId);
+          this.lastTakeoverFrame = null;
+        }
+        await this.browser.close();
+  }
+
   public async start(): Promise<void> {
-    await this.switchClient.start();
+    if (process.env.SWITCH_TRANSPORT === 'direct_legacy') await this.switchClient.start();
 
     const server = http.createServer(async (req, res) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
+      const origin = req.headers.origin;
+      const allowedOrigins = [`http://localhost:${this.port}`, `http://127.0.0.1:${this.port}`, 'http://localhost:4200', 'http://127.0.0.1:4200'];
+      if (origin && !allowedOrigins.includes(origin)) { res.writeHead(403); res.end('Origin not permitted'); return; }
+      if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       if (req.method === 'OPTIONS') {
         res.writeHead(204);
         res.end();
         return;
       }
 
+      try {
       const url = new URL(req.url || '/', `http://localhost:${this.port}`);
+
+      const principal = this.auth.authenticate(req.headers.authorization);
+      if (principal?.kind === 'bridge') this.lastAgentContactAt = new Date().toISOString();
+      if (url.pathname === '/api/auth/session' && req.method === 'GET') {
+        if (!principal) throw new Error('Pair this device with Studio before sending tasks or approvals.');
+        const { token, ...safe } = principal; res.writeHead(200, { 'Content-Type':'application/json' }); res.end(JSON.stringify(safe)); return;
+      }
+      if (url.pathname === '/api/pair' && req.method === 'POST') {
+        const body = await this.readJsonBody<{ code: string }>(req);
+        const paired = this.auth.pair(body.code, req.socket.remoteAddress || 'unknown');
+        res.writeHead(200, { 'Content-Type':'application/json' }); res.end(JSON.stringify(paired)); return;
+      }
+      if (url.pathname === '/api/pairing-code' && req.method === 'POST') {
+        if (!this.auth.canApprove(principal)) throw new Error('Authenticated operator required.');
+        res.writeHead(200, { 'Content-Type':'application/json' }); res.end(JSON.stringify(this.auth.issueCode())); return;
+      }
+      const evidenceMatch = /^\/api\/tasks\/(task-[a-zA-Z0-9-]+)(?:\/(evidence))?$/.exec(url.pathname);
+      if (evidenceMatch && req.method === 'GET') {
+        const task = this.repository.get(evidenceMatch[1]);
+        if (!task) { res.writeHead(404); res.end(JSON.stringify({ error: 'Task not found' })); return; }
+        res.writeHead(200, { 'Content-Type':'application/json' }); res.end(JSON.stringify(evidenceMatch[2] ? evidencePacket(task) : task)); return;
+      }
+      if (req.method === 'POST' && !principal) { res.writeHead(401, { 'Content-Type':'application/json' }); res.end(JSON.stringify({ error: 'Authenticated client required. Pair your iPhone through Studio.' })); return; }
 
       // Serve step screenshots & replay artifacts
       if (url.pathname.startsWith('/captures/')) {
         const fileName = path.basename(url.pathname);
         const filePath = path.join(CAPTURES_DIR, fileName);
         if (fs.existsSync(filePath)) {
-          const contentType = fileName.endsWith('.svg') ? 'image/svg+xml' : 'image/png';
+          const contentType = fileName.endsWith('.svg') ? 'image/svg+xml' : fileName.endsWith('.gif') ? 'image/gif' : fileName.endsWith('.m4a') ? 'audio/mp4' : 'image/png';
           res.writeHead(200, { 'Content-Type': contentType });
           fs.createReadStream(filePath).pipe(res);
           return;
@@ -437,8 +594,13 @@ export class DeskhandGatewayServer {
           senderName?: string;
           senderRole?: TeamRole;
           source?: TaskSource;
+          roomId?: string;
+          threadId?: string;
+          requestId?: string;
+          parentTaskId?: string;
         }>(req);
 
+        if (!body.prompt?.trim() && !body.onDeviceTranscript?.trim() && !body.audioBase64) throw new Error('A prompt is required');
         let finalPrompt = body.prompt || '';
         if (body.source === 'ios_voice' || body.onDeviceTranscript || body.audioBase64) {
           const sttResult = await this.stt.transcribeVoiceNote({
@@ -451,8 +613,13 @@ export class DeskhandGatewayServer {
         const task = await this.startTask({
           prompt: finalPrompt,
           senderName: body.senderName || 'Priya',
-          senderRole: body.senderRole || 'qa-lead',
-          source: body.source || 'ios_text'
+          senderRole: principal!.role,
+          source: body.source || 'ios_text',
+          audioBase64: body.audioBase64,
+          roomId: body.roomId,
+          threadId: body.threadId,
+          requestId: body.requestId,
+          parentTaskId: body.parentTaskId
         });
 
         res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -463,15 +630,20 @@ export class DeskhandGatewayServer {
       if (url.pathname.match(/^\/api\/tasks\/[^/]+\/approval$/) && req.method === 'POST') {
         const taskId = url.pathname.split('/')[3];
         const body = await this.readJsonBody<{
+          approvalId: string;
           decision: 'approve' | 'reject';
           responderName: string;
           responderRole: TeamRole;
         }>(req);
+        if (!this.auth.canApprove(principal)) { res.writeHead(403); res.end(JSON.stringify({ error: 'An authenticated operator must decide. Chat coordinators cannot approve.' })); return; }
+        if (!body.approvalId || body.approvalId !== this.activeTask?.pendingApproval?.approvalId || taskId !== this.activeTask.taskId) {
+          res.writeHead(409); res.end(JSON.stringify({ error: 'Approval does not match the pending action.' })); return;
+        }
         const result = this.resolveApproval(
           taskId,
           body.decision,
-          body.responderName || 'Priya',
-          body.responderRole || 'qa-lead'
+          principal!.name,
+          principal!.role
         );
         res.writeHead(result.ok ? 200 : 403, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
@@ -479,6 +651,7 @@ export class DeskhandGatewayServer {
       }
 
       if (url.pathname.match(/^\/api\/tasks\/[^/]+\/takeover$/) && req.method === 'POST') {
+        if (!this.auth.canApprove(principal)) throw new Error('Only a paired human operator can control takeover.');
         const taskId = url.pathname.split('/')[3];
         const body = await this.readJsonBody<RemoteTakeoverInput>(req);
         await this.handleTakeoverInput({ ...body, taskId });
@@ -488,6 +661,7 @@ export class DeskhandGatewayServer {
       }
 
       if ((url.pathname === '/webhook/switch' || url.pathname === '/api/switch/events') && req.method === 'POST') {
+        if (process.env.SWITCH_TRANSPORT !== 'direct_legacy' || principal?.kind !== 'operator') throw new Error('Direct legacy Switch events are disabled for Console-managed coordination.');
         const event = await this.readJsonBody<SwitchRoomMessageEvent>(req);
         const handled = this.switchClient.handleIncomingSwitchEvent(event);
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -505,13 +679,7 @@ export class DeskhandGatewayServer {
       }
 
       if (url.pathname === '/api/kill' && req.method === 'POST') {
-        if (this.activeTask) {
-          this.activeTask.status = 'FAILED';
-          this.activeTask.summary = 'Emergency Kill Switch triggered by operator.';
-          this.broadcast({ event: 'task:completed', data: this.activeTask });
-          this.activeTask = null;
-        }
-        await this.browser.close();
+        await this.emergencyStop();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
         return;
@@ -519,27 +687,19 @@ export class DeskhandGatewayServer {
 
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
+      } catch (error) {
+        if (!res.headersSent) res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: (error as Error).message }));
+      }
     });
 
     const wss = new WebSocketServer({ server, path: '/ws' });
     wss.on('connection', (ws) => {
       this.wsClients.add(ws);
       ws.send(JSON.stringify({ event: 'host:status', data: this.getStatusPayload() }));
+      if (this.lastTakeoverFrame) ws.send(JSON.stringify(this.lastTakeoverFrame));
 
-      ws.on('message', async (raw) => {
-        try {
-          const msg = JSON.parse(raw.toString()) as {
-            event: string;
-            data: RemoteTakeoverInput;
-          };
-          if (msg.event === 'takeover:input') {
-            await this.handleTakeoverInput(msg.data);
-          }
-        } catch {
-          // ignore malformed messages
-        }
-      });
-
+      // WebSocket is a read-only feed. All operator input uses authenticated REST.
       ws.on('close', () => {
         this.wsClients.delete(ws);
       });
@@ -590,10 +750,16 @@ export class DeskhandGatewayServer {
   }
 
   private readJsonBody<T>(req: http.IncomingMessage): Promise<T> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let raw = '';
-      req.on('data', (chunk) => (raw += chunk));
+      let size = 0;
+      req.on('data', (chunk) => {
+        size += chunk.length;
+        if (size <= 8 * 1024 * 1024) raw += chunk;
+      });
+      req.on('error', reject);
       req.on('end', () => {
+        if (size > 8 * 1024 * 1024) { reject(new Error('Request exceeds 8 MB')); return; }
         try {
           resolve(JSON.parse(raw || '{}') as T);
         } catch {

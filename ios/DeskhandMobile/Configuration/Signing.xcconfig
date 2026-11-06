@@ -1,0 +1,3 @@
+// Per-developer overrides stay in the ignored LocalSigning.xcconfig file.
+CODE_SIGN_STYLE = Automatic
+#include? "LocalSigning.xcconfig"
