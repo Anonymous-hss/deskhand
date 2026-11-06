@@ -149,13 +149,22 @@ export class DeskhandGatewayServer {
   private async runTaskLoop(task: DeskhandTask): Promise<void> {
     try {
       for (let stepIndex = 0; stepIndex < 10; stepIndex++) {
+        console.log(`[DEBUG runTaskLoop] Loop start step ${stepIndex}`);
         if (this.activeTask?.taskId !== task.taskId) return;
 
+        console.log(`[DEBUG runTaskLoop] Getting pageSnapshot...`);
+        const pageSnapshot = await this.browser.getPageSnapshot();
+        console.log(`[DEBUG runTaskLoop] PageSnapshot: ${pageSnapshot.url}`);
+
+        console.log(`[DEBUG runTaskLoop] Calling planner.planNextStep...`);
         const plan = await this.planner.planNextStep(
           task.prompt,
           stepIndex,
-          task.steps[task.steps.length - 1]?.screenshotUrl
+          task.steps[task.steps.length - 1]?.screenshotUrl,
+          pageSnapshot,
+          task.steps
         );
+        console.log(`[DEBUG runTaskLoop] Received plan action: ${plan.action.type} thought: ${plan.thought}`);
 
         // Check if Human Takeover is needed (e.g. 2FA Login Code screen)
         if (plan.needsHumanTakeover) {
@@ -294,12 +303,15 @@ export class DeskhandGatewayServer {
           return;
         }
 
+        console.log(`[DEBUG runTaskLoop] Executing action: ${plan.action.type}...`);
         await this.browser.executeAction(plan.action);
+        console.log(`[DEBUG runTaskLoop] Action executed. Capturing screenshot...`);
         const screenshotUrl = await this.browser.captureStepScreenshot(
           task.taskId,
           stepIndex + 1,
           plan.thought
         );
+        console.log(`[DEBUG runTaskLoop] Screenshot captured: ${screenshotUrl}`);
 
         const step: TaskStep = {
           stepNumber: stepIndex + 1,

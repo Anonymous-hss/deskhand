@@ -63,6 +63,7 @@ export class SwitchConnector {
     try {
       const res = await fetch(`${this.serverUrl}/agents/register`, {
         method: 'POST',
+        signal: AbortSignal.timeout(600),
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.token}`
@@ -92,6 +93,7 @@ export class SwitchConnector {
       try {
         const res = await fetch(`${this.serverUrl}/agents/${this.agentId}/heartbeat`, {
           method: 'POST',
+          signal: AbortSignal.timeout(600),
           headers: { Authorization: `Bearer ${this.token}` }
         });
         this.connected = res.ok;
@@ -133,6 +135,7 @@ export class SwitchConnector {
     try {
       await fetch(endpoint, {
         method: 'POST',
+        signal: AbortSignal.timeout(800),
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.token}`

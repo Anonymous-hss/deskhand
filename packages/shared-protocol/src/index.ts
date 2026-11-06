@@ -56,7 +56,7 @@ export type TaskStatus =
 export type TaskSource = 'switch_chat' | 'ios_voice' | 'ios_text' | 'windows_studio';
 
 export interface VisionAction {
-  type: 'navigate' | 'click' | 'type' | 'press' | 'wait' | 'complete';
+  type: 'navigate' | 'click' | 'type' | 'press' | 'wait' | 'complete' | 'scroll';
   url?: string;
   x?: number;
   y?: number;

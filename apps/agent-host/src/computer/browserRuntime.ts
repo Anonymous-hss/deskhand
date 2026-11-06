@@ -8,6 +8,13 @@ import { SafetyEngine } from '../safety/safetyEngine.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CAPTURES_DIR = path.resolve(__dirname, '../../captures');
 
+export interface PageSnapshot {
+  title: string;
+  url: string;
+  interactiveElements: string;
+  textSnippet: string;
+}
+
 export class BrowserRuntime {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
@@ -28,24 +35,112 @@ export class BrowserRuntime {
       });
       this.context = await this.browser.newContext({
         viewport: this.viewport,
-        acceptDownloads: false
+        acceptDownloads: false,
+        userAgent:
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
       });
       this.page = await this.context.newPage();
       return this.page;
     } catch (err) {
-      console.warn('[BrowserRuntime] Playwright Chromium not launched yet (run `npx playwright install chromium` for real browser). Using synthetic screen fallback.', (err as Error).message);
+      console.warn(
+        '[BrowserRuntime] Playwright Chromium fallback:',
+        (err as Error).message
+      );
       return null;
     }
   }
 
   public getCurrentUrl(): string {
-    return this.page?.url() || 'http://localhost:4000/shop';
+    return this.page?.url() || 'about:blank';
+  }
+
+  /**
+   * Captures DOM state, visible interactive elements (buttons, inputs, links),
+   * and page content so LLM (gpt-4o) can make accurate decisions on any website.
+   */
+  public async getPageSnapshot(): Promise<PageSnapshot> {
+    const page = await this.ensurePage();
+    if (!page) {
+      return { title: 'Blank', url: 'about:blank', interactiveElements: '', textSnippet: '' };
+    }
+    try {
+      const url = page.url();
+      if (!url || url === 'about:blank') {
+        return { title: 'Blank', url: 'about:blank', interactiveElements: '', textSnippet: '' };
+      }
+      const title = await page.title().catch(() => '');
+
+      const snapshot = await page.evaluate(() => {
+        const elements: string[] = [];
+        const interactive = document.querySelectorAll(
+          'button, a, input, select, textarea, [role="button"], [role="link"], [role="tab"]'
+        );
+        let count = 0;
+        interactive.forEach((el) => {
+          if (count >= 35) return;
+          const htmlEl = el as HTMLElement;
+          const rect = htmlEl.getBoundingClientRect();
+          if (
+            rect.width === 0 ||
+            rect.height === 0 ||
+            window.getComputedStyle(htmlEl).display === 'none' ||
+            window.getComputedStyle(htmlEl).visibility === 'hidden'
+          ) {
+            return;
+          }
+          const tag = htmlEl.tagName.toLowerCase();
+          const text = (
+            htmlEl.innerText ||
+            htmlEl.getAttribute('aria-label') ||
+            htmlEl.getAttribute('title') ||
+            ''
+          )
+            .trim()
+            .replace(/\s+/g, ' ')
+            .slice(0, 45);
+          const id = htmlEl.id ? `#${htmlEl.id}` : '';
+          const name = htmlEl.getAttribute('name') ? `[name="${htmlEl.getAttribute('name')}"]` : '';
+          const type = htmlEl.getAttribute('type') ? `[type="${htmlEl.getAttribute('type')}"]` : '';
+          const placeholder = htmlEl.getAttribute('placeholder')
+            ? `[placeholder="${htmlEl.getAttribute('placeholder')}"]`
+            : '';
+          const href = htmlEl.getAttribute('href') ? `href="${htmlEl.getAttribute('href')}"` : '';
+
+          let selector =
+            id || name || placeholder || (text ? `${tag}:has-text("${text.replace(/"/g, '')}")` : tag);
+          elements.push(
+            `<${tag}${id}${name}${type}${placeholder}${href ? ' ' + href : ''}> ${text ? `"${text}"` : ''} -> selectorHint: "${selector}"`
+          );
+          count++;
+        });
+
+        const bodyText = (document.body?.innerText || '')
+          .replace(/\s+/g, ' ')
+          .slice(0, 800);
+        return { elements: elements.join('\n'), bodyText };
+      });
+
+      return {
+        title,
+        url,
+        interactiveElements: snapshot.elements,
+        textSnippet: snapshot.bodyText
+      };
+    } catch {
+      return { title: '', url: page.url(), interactiveElements: '', textSnippet: '' };
+    }
   }
 
   public async executeAction(action: VisionAction): Promise<void> {
     if (action.type === 'navigate' && action.url) {
+      let targetUrl = action.url.trim();
+      if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+        targetUrl = `https://${targetUrl}`;
+      }
+      action.url = targetUrl;
+
       if (!this.safety.isUrlAllowed(action.url)) {
-        throw new Error(`Blocked navigation to non-allowlisted site: ${action.url}`);
+        throw new Error(`Blocked navigation to site: ${action.url}`);
       }
     }
 
@@ -55,34 +150,72 @@ export class BrowserRuntime {
     switch (action.type) {
       case 'navigate':
         if (action.url) {
-          await page.goto(action.url, { waitUntil: 'domcontentloaded' });
+          await page.goto(action.url, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+          await page.waitForTimeout(600);
         }
         break;
+
       case 'click':
         if (action.selectorHint) {
           await this.highlightSelector(page, action.selectorHint);
-          await page.click(action.selectorHint, { timeout: 4000 });
+          try {
+            await page.click(action.selectorHint, { timeout: 3500 });
+          } catch {
+            try {
+              const loc = page.locator(action.selectorHint).first();
+              await loc.click({ timeout: 2500 });
+            } catch {
+              try {
+                await page.getByText(action.selectorHint).first().click({ timeout: 2000 });
+              } catch {
+                if (typeof action.x === 'number' && typeof action.y === 'number') {
+                  await this.drawClickRipple(page, action.x, action.y);
+                  await page.mouse.click(action.x, action.y);
+                }
+              }
+            }
+          }
         } else if (typeof action.x === 'number' && typeof action.y === 'number') {
           await this.drawClickRipple(page, action.x, action.y);
           await page.mouse.click(action.x, action.y);
         }
+        await page.waitForTimeout(400);
         break;
+
       case 'type':
         if (action.selectorHint && typeof action.text === 'string') {
           await this.highlightSelector(page, action.selectorHint);
-          await page.fill(action.selectorHint, action.text);
+          try {
+            await page.fill(action.selectorHint, action.text, { timeout: 3500 });
+          } catch {
+            try {
+              const loc = page.locator(action.selectorHint).first();
+              await loc.fill(action.text, { timeout: 2500 });
+            } catch {
+              await page.keyboard.type(action.text);
+            }
+          }
         } else if (typeof action.text === 'string') {
           await page.keyboard.type(action.text);
         }
         break;
+
       case 'press':
         if (action.key) {
           await page.keyboard.press(action.key);
+          await page.waitForTimeout(600);
         }
         break;
-      case 'wait':
-        await page.waitForTimeout(500);
+
+      case 'scroll':
+        await page.evaluate(() => window.scrollBy(0, 500));
+        await page.waitForTimeout(400);
         break;
+
+      case 'wait':
+        await page.waitForTimeout(1000);
+        break;
+
       case 'complete':
         break;
     }
@@ -121,11 +254,15 @@ export class BrowserRuntime {
     const page = await this.ensurePage();
 
     if (page) {
-      await page.screenshot({ path: filePath, fullPage: false });
-      return `/captures/${fileName}`;
+      try {
+        await page.screenshot({ path: filePath, fullPage: false });
+        return `/captures/${fileName}`;
+      } catch {
+        // fallback to svg below if screenshot fails
+      }
     }
 
-    // Fallback SVG if Chromium binary is not yet downloaded
+    // Fallback SVG
     const svgName = `${taskId}-step-${stepNumber}.svg`;
     const svgPath = path.join(CAPTURES_DIR, svgName);
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800">
@@ -182,4 +319,3 @@ export class BrowserRuntime {
     this.page = null;
   }
 }
-
