@@ -171,13 +171,15 @@ deskhand/
 
 ### 4.6 "Chai Co." Demo Application Suite (`Win-Dev 2`)
 Built as a single fast local server (`apps/chai-co-demos` on port `4000`) with clean, deterministic, high-contrast UI optimized for Vision LLM accuracy:
-1. **Chai Co. Staging Storefront (`/shop`):**
-   - Product catalog featuring *Masala Chai Tin (₹229)* and *Cardamom Brew*.
-   - Cart drawer + Promo code input. Entering coupon `CHAI50` and clicking **Proceed to Checkout** triggers a realistic staging crash banner (`500 Internal Server Error: CouponDiscountOverflowException at CheckoutController.ts:142`).
+1. **Chai Co. Local Demo Shop (`/shop`):**
+   - Responsive product catalog featuring *Masala Chai Tin (₹229)* and *Cardamom Morning Brew (₹199)*.
+   - Working in-memory basket with quantity controls, subtotal, delivery estimate, discount-code feedback, and a disabled checkout button while empty. Entering `CHAI50` and continuing to checkout reproduces a readable checkout error with expandable technical evidence (`CouponDiscountOverflowException at CheckoutController.ts:142`).
 2. **Chai Co. Store Admin Portal (`/admin`):**
    - Includes a toggleable **2FA Login Code Challenge** screen (for Demo Story Part 3: Takeover) and the Product Inventory table where *Masala Chai* price (`₹229`) can be edited to `₹249` and saved via a prominent **Save Price Update** button.
 3. **Chai Co. Issue Tracker (`/issues`):**
-   - Clean bug tracker with **New Issue** form (Title, Steps to Reproduce, Severity, Attached Screenshot) that generates issue `#CHAI-104` when Deskhand files the QA bug.
+   - Responsive local issue list and detail pages, with a **New Issue** form for a short description, severity, and reproduction steps. Reports receive a sequential `CHAI-*` identifier. Screenshot attachments are not implemented in this demo.
+
+> **Demo boundary:** The shop does not take payment or create real orders. Prices and issues are held in memory and reset when the demo server restarts. These pages demonstrate Deskhand workflows; they are not production commerce or issue-tracking services.
 
 ### 4.7 Windows Desktop Studio UI (`Win-Dev 2`)
 A sleek desktop window + Windows system tray utility (Tauri / Electron + React):

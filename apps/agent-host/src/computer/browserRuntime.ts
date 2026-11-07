@@ -280,6 +280,11 @@ export class BrowserRuntime {
       case 'complete':
         break;
     }
+
+    const recordingDelayMs = Number(process.env.DEMO_RECORDING_DELAY_MS || 0);
+    if (process.env.RECORD_DEMO === 'true' && Number.isFinite(recordingDelayMs) && recordingDelayMs > 0) {
+      await page.waitForTimeout(Math.min(recordingDelayMs, 5000));
+    }
   }
 
   /**

@@ -15,9 +15,9 @@ deskhand/
 ├── packages/
 │   └── shared-protocol/      # Frozen TypeScript & JSON contracts (Windows <-> Switch <-> iOS)
 ├── apps/
-│   ├── chai-co-demos/        # Win-Dev 2: Chai Co. Staging Shop (/shop), Admin (/admin), Issue Tracker (/issues)
+│   ├── chai-co-demos/        # Chai Co. customer shop, store admin, and issue tracker demo
 │   ├── agent-host/           # Win-Dev 1 & 2: Sandboxed Playwright Computer, Vision Loop, Safety Switch, Switch Client
-│   └── windows-studio/       # Win-Dev 2: Windows Operator Dashboard, Live Viewport & Call Budget Monitor
+│   └── windows-studio/       # Cross-platform local Studio dashboard, Live Viewport & Call Budget Monitor
 ├── ios/
 │   └── DeskhandMobile/       # iOS-Dev 1 & 2: Swift 6 + SwiftUI iOS App (0-Call Voice STT, FaceID Approval, Touch Takeover)
 ├── data/
@@ -33,7 +33,7 @@ deskhand/
 
 1. **Install dependencies & build shared protocol:**
    ```powershell
-   npm install
+   npm ci
    npm run build
    ```
 
@@ -41,9 +41,12 @@ deskhand/
    ```powershell
    npm run dev:demos
    ```
-   - Staging Storefront (with `CHAI50` coupon bug): `http://localhost:4000/shop`
+   - Chai Co. shop (with reproducible `CHAI50` checkout issue): `http://localhost:4000/shop`
    - Store Admin Portal (`₹229 -> ₹249` + 2FA Gate): `http://localhost:4000/admin`
    - Engineering Issue Tracker: `http://localhost:4000/issues`
+   - Health check: `http://localhost:4000/healthz`
+
+The Chai Co. suite is a local, in-memory demo environment for Deskhand workflows. Orders are not charged, prices and filed issues reset when the demo server restarts, and `CHAI50` deliberately reproduces a checkout failure so Deskhand can collect evidence and file an issue. Do not use it as a production commerce service.
 
 3. **Start the Deskhand Windows Agent Host & Switch Bridge (Port `4100`):**
    ```powershell
@@ -79,6 +82,10 @@ deskhand/
 - **Windows Team (`Win-Dev 1` & `Win-Dev 2`):** See [WINDOWS_PRODUCT_PLAN.md](./WINDOWS_PRODUCT_PLAN.md)
 - **iOS Team (`iOS-Dev 1` & `iOS-Dev 2`):** See [IOS_PRODUCT_PLAN.md](./IOS_PRODUCT_PLAN.md)
 
+## Hackathon submission
+
+**Track 01 — Best Business Workflow.** Deskhand completes a checkout bug report and an approval-gated store price update through a Switch-connected team chat, a sandboxed browser, and a paired iPhone. See the [submission brief](docs/HACKATHON_SUBMISSION.md) for the architecture, clean-clone steps, verification evidence, and known limits. The [36-second demo](submission/deskhand-demo.mp4) pairs the refreshed local fixture with verified live browser task replays; it does not show the Slack UI or iPhone screen. The active Switch path and its restrictions are documented in [live host setup](docs/LIVE_HOST_SETUP.md).
+
 
 ## Live Azure and Switch setup
 
@@ -92,6 +99,6 @@ Studio is a cross-platform **web dashboard**, served locally at `http://localhos
 
 For a physical iPhone: install the development app, connect to the same trusted Wi-Fi, open Host settings, turn Offline demo off, and enter the Mac/Windows host's LAN address on port 4100. In Studio choose **Pair iPhone operator**, then enter that single-use, five-minute code in the phone settings and Save. Live roles come from the host credential; persona switching is for the offline demo. Approval requires device authentication and a matching, unexpired action preview. This local demo uses HTTP on trusted LAN; remote deployment needs TLS and access controls.
 
-`npm test` runs unit/regression checks. `npm run test:flows` runs isolated real-Chromium workflows with the mock planner and zero paid calls; `npm run test:generalized` checks the live planner protocol against a local provider fixture. Install Chromium first with `npx playwright install chromium`. `npm run test:switch` tests only the optional legacy connector, not the active Console architecture. `RECORD_DEMO=true npm run dev` records browser context video under ignored captures/videos; close the browser/host gracefully to finish video files.
+`npm test` runs unit/regression checks. `npm run test:flows` runs isolated real-Chromium workflows with the mock planner and zero paid calls; `npm run test:generalized` checks the live planner protocol against a local provider fixture. Install Chromium first with `npx playwright install chromium`. `npm run test:switch` tests only the optional legacy connector, not the active Console architecture. `RECORD_DEMO=true npm run dev` records browser context video under ignored captures/videos; set `DEMO_RECORDING_DELAY_MS=1200` to hold each action on screen while recording. Close the browser/host gracefully to finish video files.
 
 Bug reports are built from observed page errors. “File it” retains its source task and room/thread context and returns a page-verified issue link. Price changes pause with an observed before/after diff; authenticated human approval is bound to that preview and expires after five minutes. A changed page blocks the pending save. Raw audio without an on-device transcript fails explicitly rather than inventing a task.

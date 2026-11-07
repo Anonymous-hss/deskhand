@@ -49,6 +49,8 @@ export class DeskhandGatewayServer {
   private taskController: AbortController | null = null;
   private wsClients = new Set<WebSocket>();
   private lastTakeoverFrame: Extract<GatewayWsMessage, { event: 'takeover:frame' }> | null = null;
+  private httpServer: http.Server | null = null;
+  private websocketServer: WebSocketServer | null = null;
 
   private isCurrentTask(task: DeskhandTask): boolean {
     return this.activeTask === task && !['FAILED', 'REJECTED', 'HALTED_BY_BUDGET'].includes(task.status);
@@ -532,6 +534,19 @@ export class DeskhandGatewayServer {
         await this.browser.close();
   }
 
+  public async shutdown(): Promise<void> {
+    await this.emergencyStop();
+    for (const client of this.wsClients) client.close();
+    await new Promise<void>(resolve => {
+      if (!this.websocketServer) return resolve();
+      this.websocketServer.close(() => resolve());
+    });
+    await new Promise<void>(resolve => {
+      if (!this.httpServer) return resolve();
+      this.httpServer.close(() => resolve());
+    });
+  }
+
   public async start(): Promise<void> {
     if (process.env.SWITCH_TRANSPORT === 'direct_legacy') await this.switchClient.start();
 
@@ -706,8 +721,10 @@ export class DeskhandGatewayServer {
         res.end(JSON.stringify({ error: (error as Error).message }));
       }
     });
+    this.httpServer = server;
 
     const wss = new WebSocketServer({ server, path: '/ws' });
+    this.websocketServer = wss;
     wss.on('connection', (ws) => {
       this.wsClients.add(ws);
       ws.send(JSON.stringify({ event: 'host:status', data: this.getStatusPayload() }));
