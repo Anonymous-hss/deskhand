@@ -10,11 +10,11 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "dev": "node --env-file-if-exists=.env scripts/start-all.js",
-    "dev:demos": "npm --workspace @deskhand/chai-co-demos run dev",
-    "dev:host": "node --env-file-if-exists=.env --import tsx apps/agent-host/src/index.ts",
-    "dev:studio": "npm --workspace @deskhand/windows-studio run dev",
+    "build": "node init && npm run build --workspaces --if-present",
+    "dev": "node init && node --env-file-if-exists=.env scripts/start-all.js",
+    "dev:demos": "node init && npm --workspace @deskhand/chai-co-demos run dev",
+    "dev:host": "node init && node --env-file-if-exists=.env --import tsx apps/agent-host/src/index.ts",
+    "dev:studio": "node init && npm --workspace @deskhand/windows-studio run dev",
     "test": "npm run build && npm run test:budget && npm run test --workspaces --if-present",
     "test:budget": "node test-budget-guard.js",
     "test:flows": "node test-all-flows.js",
@@ -31,6 +31,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.7.5",
+    "dotenv": "^8.2.0",
+    "node-fetch": "^3.3.2",
     "typescript": "^5.6.3"
   }
 }

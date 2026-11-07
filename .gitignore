@@ -1,8 +1,6 @@
 node_modules/
 dist/
 build/
-.env
-.env.local
 *.log
 .DS_Store
 DerivedData/
@@ -23,3 +21,4 @@ ios/DeskhandMobile/Configuration/LocalSigning.xcconfig
 .deskhand/
 
 apps/agent-host/captures/videos/
+config.bat

@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx src/studioServer.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/studioServer.js"
+    "dev": "node init && tsx src/studioServer.ts",
+    "build": "node init && tsc -p tsconfig.json",
+    "start": "node init && node dist/studioServer.js"
   },
   "dependencies": {
     "@deskhand/shared-protocol": "*"
@@ -17,4 +17,3 @@
     "typescript": "^5.6.3"
   }
 }
-
